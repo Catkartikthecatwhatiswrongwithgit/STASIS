@@ -1,0 +1,19 @@
+{
+    "name": "aero-sentinel",
+    "private": true,
+    "version": "1.0.0",
+    "description": "Aero Sentinel - Autonomous Forest Monitoring Rover Command Center",
+    "scripts": {
+        "build": "mkdir www 2>nul & copy index.html www\\index.html",
+        "cap:init": "npx cap init \"AeroSentinel\" \"com.aerosentinel.app\" --web-dir www",
+        "cap:add-android": "npx cap add android",
+        "cap:copy": "npx cap copy",
+        "cap:open": "npx cap open android",
+        "apk": "npm run build && npx cap copy && echo APK build ready - open Android Studio with: npx cap open android"
+    },
+    "dependencies": {
+        "@capacitor/android": "^6.0.0",
+        "@capacitor/cli": "^8.1.0",
+        "@capacitor/core": "^6.0.0"
+    }
+}

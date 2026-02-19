@@ -1,0 +1,102 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.o
+*.hex
+*.bin
+*.elf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Reports (generated)
+reports/*.pdf
+reports/*.txt
+
+# Android build
+RoverProject/rover_dashboard/android/app/build/
+RoverProject/rover_dashboard/android/.gradle/
+RoverProject/rover_dashboard/android/build/
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.o
+*.hex
+*.bin
+*.elf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Reports (generated)
+reports/*.pdf
+reports/*.txt
+
+# Android build
+RoverProject/rover_dashboard/android/app/build/
+RoverProject/rover_dashboard/android/.gradle/
+RoverProject/rover_dashboard/android/build/
+
