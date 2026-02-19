@@ -123,7 +123,7 @@ logging.basicConfig(
         logging.FileHandler("station_monitor.log", mode="a"),
     ],
 )
-logger = logging.getLogger("AeroSentinel")
+logger = logging.getLogger("STASIS")
 
 
 # ===========================================================================
@@ -1456,5 +1456,693 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+    command = body["cmd"].strip().upper()
+    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
+
+    if command not in valid_commands:
+        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
+
+    success = send_command_to_bridge(command)
+    if success:
+        return jsonify({"status": "ok", "command": command})
+    else:
+        return jsonify({"error": "Serial port not available"}), 503
+
+
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """System health check endpoint (no auth required)."""
+    serial_ok = serial_connection is not None and serial_connection.is_open
+    return jsonify({
+        "status":           "healthy",
+        "serial_connected": serial_ok,
+        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
+        "total_packets":    packet_counter,
+        "database":         DATABASE_PATH,
+        "uptime_note":      "Base station is running.",
+    })
+
+
+@app.route("/api/config", methods=["GET"])
+@require_api_key
+def api_get_config():
+    """Get current configuration."""
+    return jsonify(app_config)
+
+
+@app.route("/api/config", methods=["POST"])
+@require_api_key
+def api_update_config():
+    """Update configuration."""
+    global app_config
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "No configuration data provided"}), 400
+    
+    # Update configuration
+    for key in body:
+        if key in app_config:
+            app_config[key] = body[key]
+    
+    save_config()
+    return jsonify({"status": "ok", "config": app_config})
+
+
+@app.route("/api/config/sms", methods=["GET", "POST"])
+@require_api_key
+def api_sms_config():
+    """Get or update SMS recipients."""
+    if request.method == "GET":
+        return jsonify({"recipients": app_config.get("sms_recipients", [])})
+    
+    body = request.get_json(silent=True)
+    if not body or "recipients" not in body:
+        return jsonify({"error": "Missing 'recipients' field"}), 400
+    
+    app_config["sms_recipients"] = body["recipients"]
+    save_config()
+    
+    return jsonify({
+        "status": "ok",
+        "recipients": app_config["sms_recipients"]
+    })
+
+
+@app.route("/api/export/csv", methods=["GET"])
+@require_api_key
+def api_export_csv():
+    """Export telemetry data as CSV."""
+    try:
+        history = fetch_history(1000)
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header
+        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
+        
+        # Data
+        for row in history:
+            writer.writerow([
+                row.get('timestamp', ''),
+                row.get('temp', ''),
+                row.get('bat', ''),
+                row.get('lat', ''),
+                row.get('lng', ''),
+                row.get('hazard', ''),
+                row.get('status', ''),
+                row.get('distance', ''),
+                row.get('accel_x', ''),
+                row.get('accel_y', '')
+            ])
+        
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
+        return response
+    except Exception as e:
+        logger.error("Failed to export CSV: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/json", methods=["GET"])
+@require_api_key
+def api_export_json():
+    """Export telemetry data as JSON."""
+    try:
+        history = fetch_history(1000)
+        response = make_response(json.dumps(history, indent=2))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
+        return response
+    except Exception as e:
+        logger.error("Failed to export JSON: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ===========================================================================
+#  MAIN ENTRY POINT
+# ===========================================================================
+
+def main():
+    """Application entry point."""
+    print()
+    print("=" * 60)
+    print("  AERO SENTINEL - BASE STATION MONITOR")
+    print("  Starting up...")
+    print("=" * 60)
+    print()
+
+    # Load configuration
+    load_config()
+    
+    # Initialize the database
+    initialize_database()
+    ensure_report_directory()
+
+    # Cleanup old data
+    cleanup_old_data()
+
+    # Start serial listener
+    serial_thread = threading.Thread(
+        target=serial_listener_thread,
+        name="SerialListener",
+        daemon=True,
+    )
+    serial_thread.start()
+    logger.info("Serial listener thread started.")
+
+    # Start Flask
+    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
+    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
+    
+    app.run(
+        host=FLASK_HOST,
+        port=FLASK_PORT,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
+    command = body["cmd"].strip().upper()
+    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
+
+    if command not in valid_commands:
+        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
+
+    success = send_command_to_bridge(command)
+    if success:
+        return jsonify({"status": "ok", "command": command})
+    else:
+        return jsonify({"error": "Serial port not available"}), 503
+
+
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """System health check endpoint (no auth required)."""
+    serial_ok = serial_connection is not None and serial_connection.is_open
+    return jsonify({
+        "status":           "healthy",
+        "serial_connected": serial_ok,
+        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
+        "total_packets":    packet_counter,
+        "database":         DATABASE_PATH,
+        "uptime_note":      "Base station is running.",
+    })
+
+
+@app.route("/api/config", methods=["GET"])
+@require_api_key
+def api_get_config():
+    """Get current configuration."""
+    return jsonify(app_config)
+
+
+@app.route("/api/config", methods=["POST"])
+@require_api_key
+def api_update_config():
+    """Update configuration."""
+    global app_config
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "No configuration data provided"}), 400
+    
+    # Update configuration
+    for key in body:
+        if key in app_config:
+            app_config[key] = body[key]
+    
+    save_config()
+    return jsonify({"status": "ok", "config": app_config})
+
+
+@app.route("/api/config/sms", methods=["GET", "POST"])
+@require_api_key
+def api_sms_config():
+    """Get or update SMS recipients."""
+    if request.method == "GET":
+        return jsonify({"recipients": app_config.get("sms_recipients", [])})
+    
+    body = request.get_json(silent=True)
+    if not body or "recipients" not in body:
+        return jsonify({"error": "Missing 'recipients' field"}), 400
+    
+    app_config["sms_recipients"] = body["recipients"]
+    save_config()
+    
+    return jsonify({
+        "status": "ok",
+        "recipients": app_config["sms_recipients"]
+    })
+
+
+@app.route("/api/export/csv", methods=["GET"])
+@require_api_key
+def api_export_csv():
+    """Export telemetry data as CSV."""
+    try:
+        history = fetch_history(1000)
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header
+        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
+        
+        # Data
+        for row in history:
+            writer.writerow([
+                row.get('timestamp', ''),
+                row.get('temp', ''),
+                row.get('bat', ''),
+                row.get('lat', ''),
+                row.get('lng', ''),
+                row.get('hazard', ''),
+                row.get('status', ''),
+                row.get('distance', ''),
+                row.get('accel_x', ''),
+                row.get('accel_y', '')
+            ])
+        
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
+        return response
+    except Exception as e:
+        logger.error("Failed to export CSV: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/json", methods=["GET"])
+@require_api_key
+def api_export_json():
+    """Export telemetry data as JSON."""
+    try:
+        history = fetch_history(1000)
+        response = make_response(json.dumps(history, indent=2))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
+        return response
+    except Exception as e:
+        logger.error("Failed to export JSON: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ===========================================================================
+#  MAIN ENTRY POINT
+# ===========================================================================
+
+def main():
+    """Application entry point."""
+    print()
+    print("=" * 60)
+    print("  AERO SENTINEL - BASE STATION MONITOR")
+    print("  Starting up...")
+    print("=" * 60)
+    print()
+
+    # Load configuration
+    load_config()
+    
+    # Initialize the database
+    initialize_database()
+    ensure_report_directory()
+
+    # Cleanup old data
+    cleanup_old_data()
+
+    # Start serial listener
+    serial_thread = threading.Thread(
+        target=serial_listener_thread,
+        name="SerialListener",
+        daemon=True,
+    )
+    serial_thread.start()
+    logger.info("Serial listener thread started.")
+
+    # Start Flask
+    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
+    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
+    
+    app.run(
+        host=FLASK_HOST,
+        port=FLASK_PORT,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+    command = body["cmd"].strip().upper()
+    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
+
+    if command not in valid_commands:
+        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
+
+    success = send_command_to_bridge(command)
+    if success:
+        return jsonify({"status": "ok", "command": command})
+    else:
+        return jsonify({"error": "Serial port not available"}), 503
+
+
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """System health check endpoint (no auth required)."""
+    serial_ok = serial_connection is not None and serial_connection.is_open
+    return jsonify({
+        "status":           "healthy",
+        "serial_connected": serial_ok,
+        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
+        "total_packets":    packet_counter,
+        "database":         DATABASE_PATH,
+        "uptime_note":      "Base station is running.",
+    })
+
+
+@app.route("/api/config", methods=["GET"])
+@require_api_key
+def api_get_config():
+    """Get current configuration."""
+    return jsonify(app_config)
+
+
+@app.route("/api/config", methods=["POST"])
+@require_api_key
+def api_update_config():
+    """Update configuration."""
+    global app_config
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "No configuration data provided"}), 400
+    
+    # Update configuration
+    for key in body:
+        if key in app_config:
+            app_config[key] = body[key]
+    
+    save_config()
+    return jsonify({"status": "ok", "config": app_config})
+
+
+@app.route("/api/config/sms", methods=["GET", "POST"])
+@require_api_key
+def api_sms_config():
+    """Get or update SMS recipients."""
+    if request.method == "GET":
+        return jsonify({"recipients": app_config.get("sms_recipients", [])})
+    
+    body = request.get_json(silent=True)
+    if not body or "recipients" not in body:
+        return jsonify({"error": "Missing 'recipients' field"}), 400
+    
+    app_config["sms_recipients"] = body["recipients"]
+    save_config()
+    
+    return jsonify({
+        "status": "ok",
+        "recipients": app_config["sms_recipients"]
+    })
+
+
+@app.route("/api/export/csv", methods=["GET"])
+@require_api_key
+def api_export_csv():
+    """Export telemetry data as CSV."""
+    try:
+        history = fetch_history(1000)
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header
+        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
+        
+        # Data
+        for row in history:
+            writer.writerow([
+                row.get('timestamp', ''),
+                row.get('temp', ''),
+                row.get('bat', ''),
+                row.get('lat', ''),
+                row.get('lng', ''),
+                row.get('hazard', ''),
+                row.get('status', ''),
+                row.get('distance', ''),
+                row.get('accel_x', ''),
+                row.get('accel_y', '')
+            ])
+        
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
+        return response
+    except Exception as e:
+        logger.error("Failed to export CSV: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/json", methods=["GET"])
+@require_api_key
+def api_export_json():
+    """Export telemetry data as JSON."""
+    try:
+        history = fetch_history(1000)
+        response = make_response(json.dumps(history, indent=2))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
+        return response
+    except Exception as e:
+        logger.error("Failed to export JSON: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ===========================================================================
+#  MAIN ENTRY POINT
+# ===========================================================================
+
+def main():
+    """Application entry point."""
+    print()
+    print("=" * 60)
+    print("  AERO SENTINEL - BASE STATION MONITOR")
+    print("  Starting up...")
+    print("=" * 60)
+    print()
+
+    # Load configuration
+    load_config()
+    
+    # Initialize the database
+    initialize_database()
+    ensure_report_directory()
+
+    # Cleanup old data
+    cleanup_old_data()
+
+    # Start serial listener
+    serial_thread = threading.Thread(
+        target=serial_listener_thread,
+        name="SerialListener",
+        daemon=True,
+    )
+    serial_thread.start()
+    logger.info("Serial listener thread started.")
+
+    # Start Flask
+    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
+    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
+    
+    app.run(
+        host=FLASK_HOST,
+        port=FLASK_PORT,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
+    command = body["cmd"].strip().upper()
+    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
+
+    if command not in valid_commands:
+        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
+
+    success = send_command_to_bridge(command)
+    if success:
+        return jsonify({"status": "ok", "command": command})
+    else:
+        return jsonify({"error": "Serial port not available"}), 503
+
+
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """System health check endpoint (no auth required)."""
+    serial_ok = serial_connection is not None and serial_connection.is_open
+    return jsonify({
+        "status":           "healthy",
+        "serial_connected": serial_ok,
+        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
+        "total_packets":    packet_counter,
+        "database":         DATABASE_PATH,
+        "uptime_note":      "Base station is running.",
+    })
+
+
+@app.route("/api/config", methods=["GET"])
+@require_api_key
+def api_get_config():
+    """Get current configuration."""
+    return jsonify(app_config)
+
+
+@app.route("/api/config", methods=["POST"])
+@require_api_key
+def api_update_config():
+    """Update configuration."""
+    global app_config
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "No configuration data provided"}), 400
+    
+    # Update configuration
+    for key in body:
+        if key in app_config:
+            app_config[key] = body[key]
+    
+    save_config()
+    return jsonify({"status": "ok", "config": app_config})
+
+
+@app.route("/api/config/sms", methods=["GET", "POST"])
+@require_api_key
+def api_sms_config():
+    """Get or update SMS recipients."""
+    if request.method == "GET":
+        return jsonify({"recipients": app_config.get("sms_recipients", [])})
+    
+    body = request.get_json(silent=True)
+    if not body or "recipients" not in body:
+        return jsonify({"error": "Missing 'recipients' field"}), 400
+    
+    app_config["sms_recipients"] = body["recipients"]
+    save_config()
+    
+    return jsonify({
+        "status": "ok",
+        "recipients": app_config["sms_recipients"]
+    })
+
+
+@app.route("/api/export/csv", methods=["GET"])
+@require_api_key
+def api_export_csv():
+    """Export telemetry data as CSV."""
+    try:
+        history = fetch_history(1000)
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header
+        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
+        
+        # Data
+        for row in history:
+            writer.writerow([
+                row.get('timestamp', ''),
+                row.get('temp', ''),
+                row.get('bat', ''),
+                row.get('lat', ''),
+                row.get('lng', ''),
+                row.get('hazard', ''),
+                row.get('status', ''),
+                row.get('distance', ''),
+                row.get('accel_x', ''),
+                row.get('accel_y', '')
+            ])
+        
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
+        return response
+    except Exception as e:
+        logger.error("Failed to export CSV: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/json", methods=["GET"])
+@require_api_key
+def api_export_json():
+    """Export telemetry data as JSON."""
+    try:
+        history = fetch_history(1000)
+        response = make_response(json.dumps(history, indent=2))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
+        return response
+    except Exception as e:
+        logger.error("Failed to export JSON: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ===========================================================================
+#  MAIN ENTRY POINT
+# ===========================================================================
+
+def main():
+    """Application entry point."""
+    print()
+    print("=" * 60)
+    print("  AERO SENTINEL - BASE STATION MONITOR")
+    print("  Starting up...")
+    print("=" * 60)
+    print()
+
+    # Load configuration
+    load_config()
+    
+    # Initialize the database
+    initialize_database()
+    ensure_report_directory()
+
+    # Cleanup old data
+    cleanup_old_data()
+
+    # Start serial listener
+    serial_thread = threading.Thread(
+        target=serial_listener_thread,
+        name="SerialListener",
+        daemon=True,
+    )
+    serial_thread.start()
+    logger.info("Serial listener thread started.")
+
+    # Start Flask
+    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
+    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
+    
+    app.run(
+        host=FLASK_HOST,
+        port=FLASK_PORT,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
 
 

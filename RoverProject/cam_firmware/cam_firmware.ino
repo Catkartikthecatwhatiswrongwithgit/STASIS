@@ -1,34 +1,25 @@
 /**
- * ============================================================================
- * STASIS - ESP32-CAM VISION MODULE FIRMWARE
- * ============================================================================
+ * STASIS - ESP32-CAM VISION MODULE
  * 
- * This module handles:
- * - Image capture and processing
- * - Fire detection (color + brightness analysis)
+ * Features:
+ * - Fire detection (color analysis)
  * - Motion detection (frame differencing)
- * - Human detection (simple pattern analysis)
- * - Streaming frames to ESP32-S3 on command
+ * - Human detection (skin-tone patterns)
+ * - Frame streaming on command
  * 
- * Communication Protocol with ESP32-S3:
- * - 0x01: CAPTURE - Take single image and return detection result
- * - 0x02: STREAM_ON - Start continuous frame streaming
+ * Commands from ESP32-S3:
+ * - 0x01: CAPTURE - Take image and return detection
+ * - 0x02: STREAM_ON - Start continuous streaming
  * - 0x03: STREAM_OFF - Stop streaming
- * - 0x04: DETECT - Run detection and return result
+ * - 0x04: DETECT - Run detection only
  * 
- * Response Format:
- * - DetectionResult struct with fire/motion/human flags
- * - Or simple text: "HAZARD:FIRE", "HAZARD:MOTION", "HAZARD:HUMAN", "CLEAR"
- * 
- * ============================================================================
+ * Output: "HAZARD:FIRE", "HAZARD:MOTION", "HAZARD:HUMAN", or "CLEAR"
  */
 
 #include <Arduino.h>
 #include <esp_camera.h>
 
-// ============================================================================
-// CAMERA PIN DEFINITIONS (AI Thinker ESP32-CAM)
-// ============================================================================
+// --- CAMERA PINS (AI Thinker ESP32-CAM) ---
 #define PWDN_GPIO_NUM  32
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  0
@@ -45,166 +36,288 @@
 #define VSYNC_GPIO_NUM 25
 #define HREF_GPIO_NUM  23
 #define PCLK_GPIO_NUM  22
+#define LED_PIN        4
 
-// Status LED (built-in)
-#define LED_PIN 4
+// --- COMMANDS ---
+enum { CMD_CAPTURE=1, CMD_STREAM_ON=2, CMD_STREAM_OFF=3, CMD_DETECT=4 };
 
-// ============================================================================
-// COMMAND PROTOCOL
-// ============================================================================
-typedef enum {
-  CMD_CAPTURE    = 0x01,
-  CMD_STREAM_ON  = 0x02,
-  CMD_STREAM_OFF = 0x03,
-  CMD_DETECT     = 0x04
-} CamCommand;
-
-// ============================================================================
-// DETECTION RESULT STRUCTURE
-// ============================================================================
+// --- DETECTION RESULT ---
 typedef struct __attribute__((packed)) {
   bool  fire;
   bool  motion;
   bool  human;
   float confidence;
-  char  description[24];
+  char  desc[24];
 } DetectionResult;
 
-// ============================================================================
-// DETECTION THRESHOLDS (Configurable)
-// ============================================================================
-#define FIRE_PIXEL_THRESHOLD    15    // Minimum fire pixels to trigger
-#define MOTION_PIXEL_THRESHOLD  30    // Minimum motion pixels to trigger
-#define MOTION_SENSITIVITY      4000  // Pixel difference threshold
-#define FIRE_R_MIN              25    // Red channel minimum for fire
-#define FIRE_G_MIN              10    // Green channel minimum for fire
-#define FIRE_B_MAX              8     // Blue channel maximum for fire
+// --- THRESHOLDS ---
+#define FIRE_THRESH    15
+#define MOTION_THRESH  30
+#define MOTION_SENS    4000
 
-// ============================================================================
-// GLOBAL VARIABLES
-// ============================================================================
-static uint16_t prevFrameBuf[320 * 240 / 50];  // Downsampled previous frame
-static bool     streamingEnabled = false;
-static bool     cameraReady = false;
+// --- GLOBALS ---
+static uint16_t prevFrame[320*240/50];
+static bool streaming = false;
+static bool camReady = false;
 
-// Detection statistics
-static uint16_t firePixels = 0;
-static uint16_t motionPixels = 0;
-static uint16_t humanPixels = 0;
-
-// ============================================================================
-// CAMERA INITIALIZATION
-// ============================================================================
-bool initCamera() {
-  camera_config_t config;
+// --- CAMERA INIT ---
+bool initCam() {
+  camera_config_t c;
+  c.ledc_channel = LEDC_CHANNEL_0;
+  c.ledc_timer   = LEDC_TIMER_0;
+  c.pin_d0 = Y2_GPIO_NUM;  c.pin_d1 = Y3_GPIO_NUM;
+  c.pin_d2 = Y4_GPIO_NUM;  c.pin_d3 = Y5_GPIO_NUM;
+  c.pin_d4 = Y6_GPIO_NUM;  c.pin_d5 = Y7_GPIO_NUM;
+  c.pin_d6 = Y8_GPIO_NUM;  c.pin_d7 = Y9_GPIO_NUM;
+  c.pin_xclk = XCLK_GPIO_NUM;  c.pin_pclk = PCLK_GPIO_NUM;
+  c.pin_vsync = VSYNC_GPIO_NUM; c.pin_href = HREF_GPIO_NUM;
+  c.pin_sscb_sda = SIOD_GPIO_NUM; c.pin_sscb_scl = SIOC_GPIO_NUM;
+  c.pin_pwdn = PWDN_GPIO_NUM; c.pin_reset = RESET_GPIO_NUM;
+  c.xclk_freq_hz = 20000000;
+  c.pixel_format = PIXFORMAT_RGB565;
+  c.frame_size = FRAMESIZE_QVGA;
+  c.jpeg_quality = 12;
+  c.fb_count = 2;
   
-  config.ledc_channel   = LEDC_CHANNEL_0;
-  config.ledc_timer     = LEDC_TIMER_0;
-  config.pin_d0         = Y2_GPIO_NUM;
-  config.pin_d1         = Y3_GPIO_NUM;
-  config.pin_d2         = Y4_GPIO_NUM;
-  config.pin_d3         = Y5_GPIO_NUM;
-  config.pin_d4         = Y6_GPIO_NUM;
-  config.pin_d5         = Y7_GPIO_NUM;
-  config.pin_d6         = Y8_GPIO_NUM;
-  config.pin_d7         = Y9_GPIO_NUM;
-  config.pin_xclk       = XCLK_GPIO_NUM;
-  config.pin_pclk       = PCLK_GPIO_NUM;
-  config.pin_vsync      = VSYNC_GPIO_NUM;
-  config.pin_href       = HREF_GPIO_NUM;
-  config.pin_sscb_sda   = SIOD_GPIO_NUM;
-  config.pin_sscb_scl   = SIOC_GPIO_NUM;
-  config.pin_pwdn       = PWDN_GPIO_NUM;
-  config.pin_reset      = RESET_GPIO_NUM;
-  config.xclk_freq_hz   = 20000000;
-  config.pixel_format   = PIXFORMAT_RGB565;
-  config.frame_size     = FRAMESIZE_QVGA;  // 320x240 for faster processing
-  config.jpeg_quality   = 12;
-  config.fb_count       = 2;  // Double buffer for streaming
-
-  // Try to initialize camera with retry
-  for (int attempt = 0; attempt < 3; attempt++) {
-    if (esp_camera_init(&config) == ESP_OK) {
-      cameraReady = true;
-      return true;
-    }
+  for (int i=0; i<3; i++) {
+    if (esp_camera_init(&c) == ESP_OK) { camReady = true; return true; }
     delay(500);
   }
-  
   return false;
 }
 
-// ============================================================================
-// DETECTION ALGORITHMS
-// ============================================================================
-
-/**
- * Analyze frame for fire, motion, and human detection
- * Uses RGB565 format for efficient processing
- */
-DetectionResult analyzeFrame(camera_fb_t *fb) {
-  DetectionResult result;
-  result.fire = false;
-  result.motion = false;
-  result.human = false;
-  result.confidence = 0.0;
-  strcpy(result.description, "CLEAR");
-
-  if (!fb || !fb->buf) {
-    strcpy(result.description, "ERROR: No frame");
-    return result;
-  }
-
-  int width = fb->width;
-  int height = fb->height;
+// --- ANALYZE FRAME ---
+DetectionResult analyze(camera_fb_t *fb) {
+  DetectionResult r = {false, false, false, 0.0, "CLEAR"};
+  if (!fb || !fb->buf) { strcpy(r.desc, "ERROR"); return r; }
   
-  firePixels = 0;
-  motionPixels = 0;
-  humanPixels = 0;
+  int firePx=0, motionPx=0, humanPx=0;
+  int step = 50, samples = (fb->width * fb->height) / step;
   
-  // Sample every 50th pixel for performance
-  int sampleStep = 50;
-  int totalSamples = (width * height) / sampleStep;
-  
-  for (int i = 0; i < width * height; i += sampleStep) {
-    uint16_t pixel = ((uint16_t*)fb->buf)[i];
+  for (int i=0; i < fb->width * fb->height; i += step) {
+    uint16_t px = ((uint16_t*)fb->buf)[i];
+    uint8_t red = (px >> 11) & 0x1F;
+    uint8_t grn = (px >> 5) & 0x3F;
+    uint8_t blu = px & 0x1F;
     
-    // Extract RGB components from RGB565
-    uint8_t r = (pixel >> 11) & 0x1F;  // 5 bits
-    uint8_t g = (pixel >> 5) & 0x3F;   // 6 bits
-    uint8_t b = pixel & 0x1F;          // 5 bits
+    // Fire: high red, medium green, low blue
+    if (red > 25 && grn > 10 && blu < 8) firePx++;
     
-    // --- FIRE DETECTION ---
-    // Fire typically has high red, medium green, low blue
-    if (r > FIRE_R_MIN && g > FIRE_G_MIN && b < FIRE_B_MAX) {
-      firePixels++;
+    // Motion: compare with previous
+    int idx = i/step;
+    if (idx < sizeof(prevFrame)/2) {
+      if (abs((int)px - prevFrame[idx]) > MOTION_SENS) motionPx++;
+      prevFrame[idx] = px;
     }
     
-    // --- MOTION DETECTION ---
-    // Compare with previous frame
-    int bufIndex = i / sampleStep;
-    if (bufIndex < sizeof(prevFrameBuf) / sizeof(prevFrameBuf[0])) {
-      int pixelDiff = abs((int)pixel - (int)prevFrameBuf[bufIndex]);
-      if (pixelDiff > MOTION_SENSITIVITY) {
-        motionPixels++;
-      }
-      prevFrameBuf[bufIndex] = pixel;
-    }
-    
-    // --- HUMAN DETECTION (Simplified) ---
-    // Look for skin-tone colors (simplified heuristic)
-    // Skin typically has R > 15, G between 8-20, B between 5-15
-    if (r > 15 && g > 8 && g < 20 && b > 5 && b < 15) {
-      humanPixels++;
-    }
+    // Human: skin tone approximation
+    if (red > 15 && grn > 8 && grn < 20 && blu > 5 && blu < 15) humanPx++;
   }
   
-  // Calculate confidence based on pixel counts
-  float fireRatio = (float)firePixels / totalSamples;
-  float motionRatio = (float)motionPixels / totalSamples;
-  float humanRatio = (float)humanPixels / totalSamples;
+  // Set results
+  if (firePx > FIRE_THRESH) { r.fire = true; strcpy(r.desc, "FIRE DETECTED"); }
+  if (motionPx > MOTION_THRESH) { 
+    r.motion = true; 
+    if (r.fire) strcat(r.desc, "+MOTION"); else strcpy(r.desc, "MOTION DETECTED");
+  }
+  if (humanPx > FIRE_THRESH*2) { 
+    r.human = true; 
+    if (r.fire || r.motion) strcat(r.desc, "+HUMAN"); else strcpy(r.desc, "HUMAN DETECTED");
+  }
   
-  // Determine detections
+  r.confidence = (float)(firePx + motionPx + humanPx) / samples * 100;
+  return r;
+}
+
+// --- CAPTURE & SEND ---
+void capture() {
+  if (!camReady) { Serial.println("ERROR:CAM"); return; }
+  
+  digitalWrite(LED_PIN, LOW);
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) { Serial.println("ERROR:CAP"); digitalWrite(LED_PIN, HIGH); return; }
+  
+  DetectionResult r = analyze(fb);
+  esp_camera_fb_return(fb);
+  
+  Serial.write((uint8_t*)&r, sizeof(r));
+  Serial.println();
+  
+  if (r.fire) Serial.println("HAZARD:FIRE");
+  else if (r.motion) Serial.println("HAZARD:MOTION");
+  else if (r.human) Serial.println("HAZARD:HUMAN");
+  else Serial.println("CLEAR");
+  
+  digitalWrite(LED_PIN, HIGH);
+}
+
+// --- STREAM FRAME ---
+void streamFrame() {
+  if (!camReady || !streaming) return;
+  
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) return;
+  
+  Serial.printf("FRAME:%dx%d:%d:", fb->width, fb->height, fb->len);
+  Serial.write(fb->buf, fb->len);
+  Serial.println();
+  
+  esp_camera_fb_return(fb);
+}
+
+// --- COMMAND HANDLER ---
+void handleCmd(uint8_t cmd) {
+  switch (cmd) {
+    case CMD_CAPTURE:    capture(); break;
+    case CMD_STREAM_ON:  streaming = true; Serial.println("STREAM:ON"); break;
+    case CMD_STREAM_OFF: streaming = false; Serial.println("STREAM:OFF"); break;
+    case CMD_DETECT:     capture(); break;
+    default: Serial.printf("ERR:CMD:%02X\n", cmd);
+  }
+}
+
+// --- SETUP ---
+void setup() {
+  Serial.begin(115200);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  
+  // Startup blinks
+  for (int i=0; i<3; i++) { digitalWrite(LED_PIN, LOW); delay(100); digitalWrite(LED_PIN, HIGH); delay(100); }
+  
+  if (initCam()) {
+    Serial.println("CAM:READY");
+    digitalWrite(LED_PIN, LOW); delay(500); digitalWrite(LED_PIN, HIGH);
+  } else {
+    Serial.println("CAM:ERROR");
+    while (1) { digitalWrite(LED_PIN, LOW); delay(200); digitalWrite(LED_PIN, HIGH); delay(200); }
+  }
+  
+  memset(prevFrame, 0, sizeof(prevFrame));
+}
+
+// --- LOOP ---
+void loop() {
+  if (Serial.available()) handleCmd(Serial.read());
+  
+  if (streaming) { streamFrame(); delay(50); }
+  
+  delay(10);
+}
+  int firePx=0, motionPx=0, humanPx=0;
+  int step = 50, samples = (fb->width * fb->height) / step;
+  
+  for (int i=0; i < fb->width * fb->height; i += step) {
+    uint16_t px = ((uint16_t*)fb->buf)[i];
+    uint8_t red = (px >> 11) & 0x1F;
+    uint8_t grn = (px >> 5) & 0x3F;
+    uint8_t blu = px & 0x1F;
+    
+    // Fire: high red, medium green, low blue
+    if (red > 25 && grn > 10 && blu < 8) firePx++;
+    
+    // Motion: compare with previous
+    int idx = i/step;
+    if (idx < sizeof(prevFrame)/2) {
+      if (abs((int)px - prevFrame[idx]) > MOTION_SENS) motionPx++;
+      prevFrame[idx] = px;
+    }
+    
+    // Human: skin tone approximation
+    if (red > 15 && grn > 8 && grn < 20 && blu > 5 && blu < 15) humanPx++;
+  }
+  
+  // Set results
+  if (firePx > FIRE_THRESH) { r.fire = true; strcpy(r.desc, "FIRE DETECTED"); }
+  if (motionPx > MOTION_THRESH) { 
+    r.motion = true; 
+    if (r.fire) strcat(r.desc, "+MOTION"); else strcpy(r.desc, "MOTION DETECTED");
+  }
+  if (humanPx > FIRE_THRESH*2) { 
+    r.human = true; 
+    if (r.fire || r.motion) strcat(r.desc, "+HUMAN"); else strcpy(r.desc, "HUMAN DETECTED");
+  }
+  
+  r.confidence = (float)(firePx + motionPx + humanPx) / samples * 100;
+  return r;
+}
+
+// --- CAPTURE & SEND ---
+void capture() {
+  if (!camReady) { Serial.println("ERROR:CAM"); return; }
+  
+  digitalWrite(LED_PIN, LOW);
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) { Serial.println("ERROR:CAP"); digitalWrite(LED_PIN, HIGH); return; }
+  
+  DetectionResult r = analyze(fb);
+  esp_camera_fb_return(fb);
+  
+  Serial.write((uint8_t*)&r, sizeof(r));
+  Serial.println();
+  
+  if (r.fire) Serial.println("HAZARD:FIRE");
+  else if (r.motion) Serial.println("HAZARD:MOTION");
+  else if (r.human) Serial.println("HAZARD:HUMAN");
+  else Serial.println("CLEAR");
+  
+  digitalWrite(LED_PIN, HIGH);
+}
+
+// --- STREAM FRAME ---
+void streamFrame() {
+  if (!camReady || !streaming) return;
+  
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) return;
+  
+  Serial.printf("FRAME:%dx%d:%d:", fb->width, fb->height, fb->len);
+  Serial.write(fb->buf, fb->len);
+  Serial.println();
+  
+  esp_camera_fb_return(fb);
+}
+
+// --- COMMAND HANDLER ---
+void handleCmd(uint8_t cmd) {
+  switch (cmd) {
+    case CMD_CAPTURE:    capture(); break;
+    case CMD_STREAM_ON:  streaming = true; Serial.println("STREAM:ON"); break;
+    case CMD_STREAM_OFF: streaming = false; Serial.println("STREAM:OFF"); break;
+    case CMD_DETECT:     capture(); break;
+    default: Serial.printf("ERR:CMD:%02X\n", cmd);
+  }
+}
+
+// --- SETUP ---
+void setup() {
+  Serial.begin(115200);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  
+  // Startup blinks
+  for (int i=0; i<3; i++) { digitalWrite(LED_PIN, LOW); delay(100); digitalWrite(LED_PIN, HIGH); delay(100); }
+  
+  if (initCam()) {
+    Serial.println("CAM:READY");
+    digitalWrite(LED_PIN, LOW); delay(500); digitalWrite(LED_PIN, HIGH);
+  } else {
+    Serial.println("CAM:ERROR");
+    while (1) { digitalWrite(LED_PIN, LOW); delay(200); digitalWrite(LED_PIN, HIGH); delay(200); }
+  }
+  
+  memset(prevFrame, 0, sizeof(prevFrame));
+}
+
+// --- LOOP ---
+void loop() {
+  if (Serial.available()) handleCmd(Serial.read());
+  
+  if (streaming) { streamFrame(); delay(50); }
+  
+  delay(10);
+}
+
   if (firePixels > FIRE_PIXEL_THRESHOLD) {
     result.fire = true;
     result.confidence = fireRatio * 100.0;
