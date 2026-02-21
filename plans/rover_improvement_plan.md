@@ -337,7 +337,7 @@ The ESP32-CAM now only handles image capture and processing. The ESP32-S3 handle
 
 ## Project Overview
 
-**Aero Sentinel** is an autonomous forest/environmental monitoring rover system with:
+**Stasis** is an autonomous forest/environmental monitoring rover system with:
 - **Rover Unit (ESP32-S3)**: Main controller with sensors, motors, GPS, video streaming, and hazard detection
 - **Vision System (ESP32-CAM)**: Camera module connected via UART to S3 for image processing
 - **Base Station Bridge (ESP32-C3)**: Communication relay between rover and base
@@ -829,7 +829,7 @@ function loadAlertHistory() {
 
 ## Project Overview
 
-**Aero Sentinel** is an autonomous forest/environmental monitoring rover system with:
+**Stasis** is an autonomous forest/environmental monitoring rover system with:
 - **Rover Unit (ESP32-S3)**: Main controller with sensors, motors, GPS, video streaming, and hazard detection
 - **Vision System (ESP32-CAM)**: Camera module connected via UART to S3 for image processing
 - **Base Station Bridge (ESP32-C3)**: Communication relay between rover and base
@@ -1953,7 +1953,7 @@ The ESP32-CAM now only handles image capture and processing. The ESP32-S3 handle
 
 ## Project Overview
 
-**Aero Sentinel** is an autonomous forest/environmental monitoring rover system with:
+**Stasis** is an autonomous forest/environmental monitoring rover system with:
 - **Rover Unit (ESP32-S3)**: Main controller with sensors, motors, GPS, video streaming, and hazard detection
 - **Vision System (ESP32-CAM)**: Camera module connected via UART to S3 for image processing
 - **Base Station Bridge (ESP32-C3)**: Communication relay between rover and base
@@ -2445,7 +2445,7 @@ function loadAlertHistory() {
 
 ## Project Overview
 
-**Aero Sentinel** is an autonomous forest/environmental monitoring rover system with:
+**Stasis** is an autonomous forest/environmental monitoring rover system with:
 - **Rover Unit (ESP32-S3)**: Main controller with sensors, motors, GPS, video streaming, and hazard detection
 - **Vision System (ESP32-CAM)**: Camera module connected via UART to S3 for image processing
 - **Base Station Bridge (ESP32-C3)**: Communication relay between rover and base

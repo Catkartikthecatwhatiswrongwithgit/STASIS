@@ -164,7 +164,7 @@ The ESP32-C3 creates a WiFi Access Point for status indication:
 
 | Setting | Value |
 |---------|-------|
-| SSID | `AeroSentinel-Base` |
+| SSID | `Stasis-Base` |
 | Password | `sentinel123` |
 | IP Address | 192.168.4.1 |
 | Port | 80 |
@@ -438,10 +438,10 @@ Status messages:
 2. You should see:
    ```
    ========================
-   Aero Sentinel Base Station Bridge
+   Stasis Base Station Bridge
    ========================
    MAC: XX:XX:XX:XX:XX:XX
-   SSID: AeroSentinel-Base
+   SSID: Stasis-Base
    IP: 192.168.4.1
    Status page: http://192.168.4.1
    LCD: Initialized (0x27)
@@ -452,7 +452,7 @@ Status messages:
 ### WiFi AP Test
 
 1. On your phone/laptop, scan for WiFi networks
-2. Connect to `AeroSentinel-Base` (password: `sentinel123`)
+2. Connect to `Stasis-Base` (password: `sentinel123`)
 3. Open browser and go to `http://192.168.4.1`
 4. You should see the status page with ESP-NOW status
 
@@ -470,7 +470,7 @@ import serial
 s = serial.Serial('/dev/serial0', 115200)
 s.write(b'LCD:CLEAR\n')
 s.write(b'LCD:L1:Hello World\n')
-s.write(b'LCD:L2:AeroSentinel\n')
+s.write(b'LCD:L2:Stasis\n')
 ```
 
 ### API Test
@@ -617,10 +617,10 @@ Status messages:
 2. You should see:
    ```
    ========================
-   Aero Sentinel Base Station Bridge
+   Stasis Base Station Bridge
    ========================
    MAC: XX:XX:XX:XX:XX:XX
-   SSID: AeroSentinel-Base
+   SSID: Stasis-Base
    IP: 192.168.4.1
    Status page: http://192.168.4.1
    LCD: Initialized (0x27)
@@ -631,7 +631,7 @@ Status messages:
 ### WiFi AP Test
 
 1. On your phone/laptop, scan for WiFi networks
-2. Connect to `AeroSentinel-Base` (password: `sentinel123`)
+2. Connect to `Stasis-Base` (password: `sentinel123`)
 3. Open browser and go to `http://192.168.4.1`
 4. You should see the status page with ESP-NOW status
 
@@ -649,7 +649,7 @@ import serial
 s = serial.Serial('/dev/serial0', 115200)
 s.write(b'LCD:CLEAR\n')
 s.write(b'LCD:L1:Hello World\n')
-s.write(b'LCD:L2:AeroSentinel\n')
+s.write(b'LCD:L2:Stasis\n')
 ```
 
 ### API Test

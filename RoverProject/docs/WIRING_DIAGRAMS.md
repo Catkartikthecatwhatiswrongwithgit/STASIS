@@ -1,6 +1,6 @@
-# Complete Wiring Diagrams - Aero Sentinel Rover System
+# Complete Wiring Diagrams - Stasis Rover System
 
-This document provides comprehensive wiring diagrams for all components of the Aero Sentinel system.
+This document provides comprehensive wiring diagrams for all components of the Stasis system.
 
 ---
 

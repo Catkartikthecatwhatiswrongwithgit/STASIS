@@ -2,7 +2,7 @@
 
 ## Overview
 
-AprilTag docking allows the Aero Sentinel rover to automatically align with a charging station using visual markers. This guide explains how to set up and use the AprilTag docking system.
+AprilTag docking allows the Stasis rover to automatically align with a charging station using visual markers. This guide explains how to set up and use the AprilTag docking system.
 
 ## Architecture
 
@@ -467,7 +467,7 @@ ALIGNMENT_CONFIG = {
 *For GPIO extender architecture with bottom-row-only RPi0W connection*
 ## Overview
 
-AprilTag docking allows the Aero Sentinel rover to automatically align with a charging station using visual markers. This guide explains how to set up and use the AprilTag docking system.
+AprilTag docking allows the Stasis rover to automatically align with a charging station using visual markers. This guide explains how to set up and use the AprilTag docking system.
 
 ## Architecture
 

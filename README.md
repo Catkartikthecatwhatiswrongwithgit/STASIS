@@ -254,7 +254,7 @@ This project is for educational and research purposes.
 
 ## Contributors
 
-- Aero Sentinel Development Team
+- Stasis Development Team
 
 ---
 
@@ -262,7 +262,7 @@ This project is for educational and research purposes.
 
 ## Overview
 
-Aero Sentinel is an autonomous forest/environmental monitoring rover system designed to:
+Stasis is an autonomous forest/environmental monitoring rover system designed to:
 - Patrol forest environments autonomously
 - Detect environmental hazards (fire, earthquakes, intruders)
 - Send real-time alerts to forest officers via SMS
@@ -514,7 +514,7 @@ This project is for educational and research purposes.
 
 ## Contributors
 
-- Aero Sentinel Development Team
+- Stasis Development Team
 
 ---
 
@@ -775,7 +775,7 @@ This project is for educational and research purposes.
 
 ## Contributors
 
-- Aero Sentinel Development Team
+- Stasis Development Team
 
 ---
 
@@ -783,7 +783,7 @@ This project is for educational and research purposes.
 
 ## Overview
 
-Aero Sentinel is an autonomous forest/environmental monitoring rover system designed to:
+Stasis is an autonomous forest/environmental monitoring rover system designed to:
 - Patrol forest environments autonomously
 - Detect environmental hazards (fire, earthquakes, intruders)
 - Send real-time alerts to forest officers via SMS
@@ -1035,7 +1035,7 @@ This project is for educational and research purposes.
 
 ## Contributors
 
-- Aero Sentinel Development Team
+- Stasis Development Team
 
 ---
 

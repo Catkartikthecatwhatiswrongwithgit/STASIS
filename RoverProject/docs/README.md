@@ -1,4 +1,4 @@
-# Aero Sentinel - Autonomous Environmental Monitoring Rover
+# Stasis - Autonomous Environmental Monitoring Rover
 
 A complete system for autonomous forest/environmental monitoring with hazard detection and base station reporting.
 
@@ -6,7 +6,7 @@ A complete system for autonomous forest/environmental monitoring with hazard det
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         AERO SENTINEL SYSTEM                                 │
+│                         Stasis SYSTEM                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │    ROVER UNIT                          BASE STATION                          │
@@ -59,9 +59,9 @@ See complete wiring diagrams: [WIRING_DIAGRAMS.md](./WIRING_DIAGRAMS.md)
 
 1. Power on the base station (RPi Zero + ESP32-C3)
 2. Power on the rover
-3. Connect to WiFi AP: `AeroSentinel-Base` (password: `sentinel123`)
+3. Connect to WiFi AP: `Stasis-Base` (password: `sentinel123`)
 4. Open `http://192.168.4.1` to check ESP32-C3 status
-5. Open `http://aerosentinel-base.local:5000/api/status` for rover data
+5. Open `http://Stasis-base.local:5000/api/status` for rover data
 
 ---
 
@@ -189,15 +189,15 @@ The Raspberry Pi Zero serves a REST API on port 5000:
 
 ```bash
 # Get latest status
-curl http://aerosentinel-base.local:5000/api/status
+curl http://Stasis-base.local:5000/api/status
 
 # Send command to rover
-curl -X POST http://aerosentinel-base.local:5000/api/command \
+curl -X POST http://Stasis-base.local:5000/api/command \
   -H "Content-Type: application/json" \
   -d '{"cmd": "FORWARD"}'
 
 # Get daily stats
-curl http://aerosentinel-base.local:5000/api/stats
+curl http://Stasis-base.local:5000/api/stats
 ```
 
 ---
@@ -323,7 +323,7 @@ A complete system for autonomous forest/environmental monitoring with hazard det
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         AERO SENTINEL SYSTEM                                 │
+│                         Stasis SYSTEM                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │    ROVER UNIT                          BASE STATION                          │
@@ -376,9 +376,9 @@ See complete wiring diagrams: [WIRING_DIAGRAMS.md](./WIRING_DIAGRAMS.md)
 
 1. Power on the base station (RPi Zero + ESP32-C3)
 2. Power on the rover
-3. Connect to WiFi AP: `AeroSentinel-Base` (password: `sentinel123`)
+3. Connect to WiFi AP: `Stasis-Base` (password: `sentinel123`)
 4. Open `http://192.168.4.1` to check ESP32-C3 status
-5. Open `http://aerosentinel-base.local:5000/api/status` for rover data
+5. Open `http://Stasis-base.local:5000/api/status` for rover data
 
 ---
 
@@ -506,15 +506,15 @@ The Raspberry Pi Zero serves a REST API on port 5000:
 
 ```bash
 # Get latest status
-curl http://aerosentinel-base.local:5000/api/status
+curl http://Stasis-base.local:5000/api/status
 
 # Send command to rover
-curl -X POST http://aerosentinel-base.local:5000/api/command \
+curl -X POST http://Stasis-base.local:5000/api/command \
   -H "Content-Type: application/json" \
   -d '{"cmd": "FORWARD"}'
 
 # Get daily stats
-curl http://aerosentinel-base.local:5000/api/stats
+curl http://Stasis-base.local:5000/api/stats
 ```
 
 ---
@@ -640,7 +640,7 @@ A complete system for autonomous forest/environmental monitoring with hazard det
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         AERO SENTINEL SYSTEM                                 │
+│                         Stasis SYSTEM                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │    ROVER UNIT                          BASE STATION                          │
@@ -693,9 +693,9 @@ See complete wiring diagrams: [WIRING_DIAGRAMS.md](./WIRING_DIAGRAMS.md)
 
 1. Power on the base station (RPi Zero + ESP32-C3)
 2. Power on the rover
-3. Connect to WiFi AP: `AeroSentinel-Base` (password: `sentinel123`)
+3. Connect to WiFi AP: `Stasis-Base` (password: `sentinel123`)
 4. Open `http://192.168.4.1` to check ESP32-C3 status
-5. Open `http://aerosentinel-base.local:5000/api/status` for rover data
+5. Open `http://Stasis-base.local:5000/api/status` for rover data
 
 ---
 
@@ -823,15 +823,15 @@ The Raspberry Pi Zero serves a REST API on port 5000:
 
 ```bash
 # Get latest status
-curl http://aerosentinel-base.local:5000/api/status
+curl http://Stasis-base.local:5000/api/status
 
 # Send command to rover
-curl -X POST http://aerosentinel-base.local:5000/api/command \
+curl -X POST http://Stasis-base.local:5000/api/command \
   -H "Content-Type: application/json" \
   -d '{"cmd": "FORWARD"}'
 
 # Get daily stats
-curl http://aerosentinel-base.local:5000/api/stats
+curl http://Stasis-base.local:5000/api/stats
 ```
 
 ---

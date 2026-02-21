@@ -44,7 +44,7 @@ Use **Raspberry Pi Imager** or **balenaEtcher**:
 4. Select OS: **Raspberry Pi OS (other)** → **Raspberry Pi OS Lite**
 5. Select your SD card
 6. Click the **gear icon** (Advanced options):
-   - Set hostname: `aerosentinel-base`
+   - Set hostname: `Stasis-base`
    - Enable SSH: **Yes**
    - Set username/password: `pi` / `sentinel2024`
    - Configure wireless LAN: (optional, for internet access)
@@ -84,7 +84,7 @@ network={
 ### Step 2: Connect via SSH
 
 ```bash
-ssh pi@aerosentinel-base.local
+ssh pi@Stasis-base.local
 # Password: sentinel2024
 ```
 
@@ -126,8 +126,8 @@ sudo pip3 install flask flask-cors pyserial fpdf2
 ### Step 2: Create Project Directory
 
 ```bash
-mkdir -p ~/aerosentinel
-cd ~/aerosentinel
+mkdir -p ~/Stasis
+cd ~/Stasis
 ```
 
 ### Step 3: Copy Station Monitor Script
@@ -136,12 +136,12 @@ Copy the `station_monitor.py` file to the Pi:
 
 **From your computer:**
 ```bash
-scp RoverProject/base_station/station_monitor.py pi@aerosentinel-base.local:~/aerosentinel/
+scp RoverProject/base_station/station_monitor.py pi@Stasis-base.local:~/Stasis/
 ```
 
 **Or create directly on Pi:**
 ```bash
-nano ~/aerosentinel/station_monitor.py
+nano ~/Stasis/station_monitor.py
 # Paste the contents
 ```
 
@@ -156,22 +156,22 @@ Create a systemd service to auto-start the script:
 #### Step 1: Create Service File
 
 ```bash
-sudo nano /etc/systemd/system/aerosentinel.service
+sudo nano /etc/systemd/system/Stasis.service
 ```
 
 #### Step 2: Add Service Configuration
 
 ```ini
 [Unit]
-Description=Aero Sentinel Base Station Monitor
+Description=Stasis Base Station Monitor
 After=network.target serial-getty@serial0.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/aerosentinel
-ExecStart=/usr/bin/python3 /home/pi/aerosentinel/station_monitor.py
+WorkingDirectory=/home/pi/Stasis
+ExecStart=/usr/bin/python3 /home/pi/Stasis/station_monitor.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -191,20 +191,20 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable aerosentinel.service
-sudo systemctl start aerosentinel.service
+sudo systemctl enable Stasis.service
+sudo systemctl start Stasis.service
 ```
 
 #### Step 4: Check Status
 
 ```bash
-sudo systemctl status aerosentinel.service
+sudo systemctl status Stasis.service
 ```
 
 #### View Logs
 
 ```bash
-journalctl -u aerosentinel.service -f
+journalctl -u Stasis.service -f
 ```
 
 ### Method 2: crontab (Alternative)
@@ -215,7 +215,7 @@ crontab -e
 
 Add this line:
 ```
-@reboot sleep 30 && /usr/bin/python3 /home/pi/aerosentinel/station_monitor.py &
+@reboot sleep 30 && /usr/bin/python3 /home/pi/Stasis/station_monitor.py &
 ```
 
 ### Method 3: rc.local (Legacy)
@@ -228,7 +228,7 @@ Add before `exit 0`:
 ```bash
 # Wait for network and serial to be ready
 sleep 20
-su - pi -c "/usr/bin/python3 /home/pi/aerosentinel/station_monitor.py &"
+su - pi -c "/usr/bin/python3 /home/pi/Stasis/station_monitor.py &"
 ```
 
 ---
@@ -275,13 +275,13 @@ The ESP32-C3 creates a WiFi Access Point for status indication:
 
 | Setting | Value |
 |---------|-------|
-| SSID | `AeroSentinel-Base` |
+| SSID | `Stasis-Base` |
 | Password | `sentinel123` |
 | IP | `192.168.4.1` |
 
 ### Accessing the Status Page
 
-1. Connect your phone/laptop to `AeroSentinel-Base` WiFi
+1. Connect your phone/laptop to `Stasis-Base` WiFi
 2. Open browser: `http://192.168.4.1`
 3. View real-time status of:
    - ESP-NOW connection
@@ -310,7 +310,7 @@ minicom -D /dev/serial0 -b 115200
 
 ```bash
 # On another device on the same network
-curl http://aerosentinel-base.local:5000/api/health
+curl http://Stasis-base.local:5000/api/health
 
 # Should return:
 # {"status": "healthy", "uptime": 123, "packets_received": 0}
@@ -319,7 +319,7 @@ curl http://aerosentinel-base.local:5000/api/health
 ### Test 3: Check Service Status
 
 ```bash
-sudo systemctl status aerosentinel.service
+sudo systemctl status Stasis.service
 ```
 
 Should show: `Active: active (running)`
@@ -345,13 +345,13 @@ sudo cat /proc/cmdline
 
 ```bash
 # Check logs
-journalctl -u aerosentinel.service -n 50
+journalctl -u Stasis.service -n 50
 
 # Check Python syntax
-python3 -m py_compile /home/pi/aerosentinel/station_monitor.py
+python3 -m py_compile /home/pi/Stasis/station_monitor.py
 
 # Run manually to debug
-cd /home/pi/aerosentinel
+cd /home/pi/Stasis
 python3 station_monitor.py
 ```
 
@@ -397,13 +397,13 @@ On a Linux computer:
 lsblk
 
 # Create image (replace sdX with your device)
-sudo dd if=/dev/sdX of=aerosentinel-base.img bs=4M status=progress
+sudo dd if=/dev/sdX of=Stasis-base.img bs=4M status=progress
 ```
 
 ### Step 4: Compress for Distribution
 
 ```bash
-gzip aerosentinel-base.img
+gzip Stasis-base.img
 ```
 
 ---
@@ -418,7 +418,7 @@ When power is connected to the Raspberry Pi Zero:
    - Serial port becomes available
 
 2. **Service Start** (after boot)
-   - `aerosentinel.service` starts automatically
+   - `Stasis.service` starts automatically
    - Python script begins execution
    - Serial connection to ESP32-C3 established
 
@@ -429,7 +429,7 @@ When power is connected to the Raspberry Pi Zero:
    - Generates reports when rover docks
 
 4. **Status Indication**
-   - ESP32-C3 creates WiFi AP: `AeroSentinel-Base`
+   - ESP32-C3 creates WiFi AP: `Stasis-Base`
    - Status page available at `http://192.168.4.1`
 
 ---
@@ -492,7 +492,7 @@ Use **Raspberry Pi Imager** or **balenaEtcher**:
 4. Select OS: **Raspberry Pi OS (other)** → **Raspberry Pi OS Lite**
 5. Select your SD card
 6. Click the **gear icon** (Advanced options):
-   - Set hostname: `aerosentinel-base`
+   - Set hostname: `Stasis-base`
    - Enable SSH: **Yes**
    - Set username/password: `pi` / `sentinel2024`
    - Configure wireless LAN: (optional, for internet access)
@@ -532,7 +532,7 @@ network={
 ### Step 2: Connect via SSH
 
 ```bash
-ssh pi@aerosentinel-base.local
+ssh pi@Stasis-base.local
 # Password: sentinel2024
 ```
 
@@ -574,8 +574,8 @@ sudo pip3 install flask flask-cors pyserial fpdf2
 ### Step 2: Create Project Directory
 
 ```bash
-mkdir -p ~/aerosentinel
-cd ~/aerosentinel
+mkdir -p ~/Stasis
+cd ~/Stasis
 ```
 
 ### Step 3: Copy Station Monitor Script
@@ -584,12 +584,12 @@ Copy the `station_monitor.py` file to the Pi:
 
 **From your computer:**
 ```bash
-scp RoverProject/base_station/station_monitor.py pi@aerosentinel-base.local:~/aerosentinel/
+scp RoverProject/base_station/station_monitor.py pi@Stasis-base.local:~/Stasis/
 ```
 
 **Or create directly on Pi:**
 ```bash
-nano ~/aerosentinel/station_monitor.py
+nano ~/Stasis/station_monitor.py
 # Paste the contents
 ```
 
@@ -604,22 +604,22 @@ Create a systemd service to auto-start the script:
 #### Step 1: Create Service File
 
 ```bash
-sudo nano /etc/systemd/system/aerosentinel.service
+sudo nano /etc/systemd/system/Stasis.service
 ```
 
 #### Step 2: Add Service Configuration
 
 ```ini
 [Unit]
-Description=Aero Sentinel Base Station Monitor
+Description=Stasis Base Station Monitor
 After=network.target serial-getty@serial0.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/aerosentinel
-ExecStart=/usr/bin/python3 /home/pi/aerosentinel/station_monitor.py
+WorkingDirectory=/home/pi/Stasis
+ExecStart=/usr/bin/python3 /home/pi/Stasis/station_monitor.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -639,20 +639,20 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable aerosentinel.service
-sudo systemctl start aerosentinel.service
+sudo systemctl enable Stasis.service
+sudo systemctl start Stasis.service
 ```
 
 #### Step 4: Check Status
 
 ```bash
-sudo systemctl status aerosentinel.service
+sudo systemctl status Stasis.service
 ```
 
 #### View Logs
 
 ```bash
-journalctl -u aerosentinel.service -f
+journalctl -u Stasis.service -f
 ```
 
 ### Method 2: crontab (Alternative)
@@ -663,7 +663,7 @@ crontab -e
 
 Add this line:
 ```
-@reboot sleep 30 && /usr/bin/python3 /home/pi/aerosentinel/station_monitor.py &
+@reboot sleep 30 && /usr/bin/python3 /home/pi/Stasis/station_monitor.py &
 ```
 
 ### Method 3: rc.local (Legacy)
@@ -676,7 +676,7 @@ Add before `exit 0`:
 ```bash
 # Wait for network and serial to be ready
 sleep 20
-su - pi -c "/usr/bin/python3 /home/pi/aerosentinel/station_monitor.py &"
+su - pi -c "/usr/bin/python3 /home/pi/Stasis/station_monitor.py &"
 ```
 
 ---
@@ -723,13 +723,13 @@ The ESP32-C3 creates a WiFi Access Point for status indication:
 
 | Setting | Value |
 |---------|-------|
-| SSID | `AeroSentinel-Base` |
+| SSID | `Stasis-Base` |
 | Password | `sentinel123` |
 | IP | `192.168.4.1` |
 
 ### Accessing the Status Page
 
-1. Connect your phone/laptop to `AeroSentinel-Base` WiFi
+1. Connect your phone/laptop to `Stasis-Base` WiFi
 2. Open browser: `http://192.168.4.1`
 3. View real-time status of:
    - ESP-NOW connection
@@ -758,7 +758,7 @@ minicom -D /dev/serial0 -b 115200
 
 ```bash
 # On another device on the same network
-curl http://aerosentinel-base.local:5000/api/health
+curl http://Stasis-base.local:5000/api/health
 
 # Should return:
 # {"status": "healthy", "uptime": 123, "packets_received": 0}
@@ -767,7 +767,7 @@ curl http://aerosentinel-base.local:5000/api/health
 ### Test 3: Check Service Status
 
 ```bash
-sudo systemctl status aerosentinel.service
+sudo systemctl status Stasis.service
 ```
 
 Should show: `Active: active (running)`
@@ -793,13 +793,13 @@ sudo cat /proc/cmdline
 
 ```bash
 # Check logs
-journalctl -u aerosentinel.service -n 50
+journalctl -u Stasis.service -n 50
 
 # Check Python syntax
-python3 -m py_compile /home/pi/aerosentinel/station_monitor.py
+python3 -m py_compile /home/pi/Stasis/station_monitor.py
 
 # Run manually to debug
-cd /home/pi/aerosentinel
+cd /home/pi/Stasis
 python3 station_monitor.py
 ```
 
@@ -845,13 +845,13 @@ On a Linux computer:
 lsblk
 
 # Create image (replace sdX with your device)
-sudo dd if=/dev/sdX of=aerosentinel-base.img bs=4M status=progress
+sudo dd if=/dev/sdX of=Stasis-base.img bs=4M status=progress
 ```
 
 ### Step 4: Compress for Distribution
 
 ```bash
-gzip aerosentinel-base.img
+gzip Stasis-base.img
 ```
 
 ---
@@ -866,7 +866,7 @@ When power is connected to the Raspberry Pi Zero:
    - Serial port becomes available
 
 2. **Service Start** (after boot)
-   - `aerosentinel.service` starts automatically
+   - `Stasis.service` starts automatically
    - Python script begins execution
    - Serial connection to ESP32-C3 established
 
@@ -877,7 +877,7 @@ When power is connected to the Raspberry Pi Zero:
    - Generates reports when rover docks
 
 4. **Status Indication**
-   - ESP32-C3 creates WiFi AP: `AeroSentinel-Base`
+   - ESP32-C3 creates WiFi AP: `Stasis-Base`
    - Status page available at `http://192.168.4.1`
 
 ---
@@ -940,7 +940,7 @@ Use **Raspberry Pi Imager** or **balenaEtcher**:
 4. Select OS: **Raspberry Pi OS (other)** → **Raspberry Pi OS Lite**
 5. Select your SD card
 6. Click the **gear icon** (Advanced options):
-   - Set hostname: `aerosentinel-base`
+   - Set hostname: `Stasis-base`
    - Enable SSH: **Yes**
    - Set username/password: `pi` / `sentinel2024`
    - Configure wireless LAN: (optional, for internet access)
@@ -980,7 +980,7 @@ network={
 ### Step 2: Connect via SSH
 
 ```bash
-ssh pi@aerosentinel-base.local
+ssh pi@Stasis-base.local
 # Password: sentinel2024
 ```
 
@@ -1022,8 +1022,8 @@ sudo pip3 install flask flask-cors pyserial fpdf2
 ### Step 2: Create Project Directory
 
 ```bash
-mkdir -p ~/aerosentinel
-cd ~/aerosentinel
+mkdir -p ~/Stasis
+cd ~/Stasis
 ```
 
 ### Step 3: Copy Station Monitor Script
@@ -1032,12 +1032,12 @@ Copy the `station_monitor.py` file to the Pi:
 
 **From your computer:**
 ```bash
-scp RoverProject/base_station/station_monitor.py pi@aerosentinel-base.local:~/aerosentinel/
+scp RoverProject/base_station/station_monitor.py pi@Stasis-base.local:~/Stasis/
 ```
 
 **Or create directly on Pi:**
 ```bash
-nano ~/aerosentinel/station_monitor.py
+nano ~/Stasis/station_monitor.py
 # Paste the contents
 ```
 
@@ -1052,22 +1052,22 @@ Create a systemd service to auto-start the script:
 #### Step 1: Create Service File
 
 ```bash
-sudo nano /etc/systemd/system/aerosentinel.service
+sudo nano /etc/systemd/system/Stasis.service
 ```
 
 #### Step 2: Add Service Configuration
 
 ```ini
 [Unit]
-Description=Aero Sentinel Base Station Monitor
+Description=Stasis Base Station Monitor
 After=network.target serial-getty@serial0.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/aerosentinel
-ExecStart=/usr/bin/python3 /home/pi/aerosentinel/station_monitor.py
+WorkingDirectory=/home/pi/Stasis
+ExecStart=/usr/bin/python3 /home/pi/Stasis/station_monitor.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -1087,20 +1087,20 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable aerosentinel.service
-sudo systemctl start aerosentinel.service
+sudo systemctl enable Stasis.service
+sudo systemctl start Stasis.service
 ```
 
 #### Step 4: Check Status
 
 ```bash
-sudo systemctl status aerosentinel.service
+sudo systemctl status Stasis.service
 ```
 
 #### View Logs
 
 ```bash
-journalctl -u aerosentinel.service -f
+journalctl -u Stasis.service -f
 ```
 
 ### Method 2: crontab (Alternative)
@@ -1111,7 +1111,7 @@ crontab -e
 
 Add this line:
 ```
-@reboot sleep 30 && /usr/bin/python3 /home/pi/aerosentinel/station_monitor.py &
+@reboot sleep 30 && /usr/bin/python3 /home/pi/Stasis/station_monitor.py &
 ```
 
 ### Method 3: rc.local (Legacy)
@@ -1124,7 +1124,7 @@ Add before `exit 0`:
 ```bash
 # Wait for network and serial to be ready
 sleep 20
-su - pi -c "/usr/bin/python3 /home/pi/aerosentinel/station_monitor.py &"
+su - pi -c "/usr/bin/python3 /home/pi/Stasis/station_monitor.py &"
 ```
 
 ---
@@ -1171,13 +1171,13 @@ The ESP32-C3 creates a WiFi Access Point for status indication:
 
 | Setting | Value |
 |---------|-------|
-| SSID | `AeroSentinel-Base` |
+| SSID | `Stasis-Base` |
 | Password | `sentinel123` |
 | IP | `192.168.4.1` |
 
 ### Accessing the Status Page
 
-1. Connect your phone/laptop to `AeroSentinel-Base` WiFi
+1. Connect your phone/laptop to `Stasis-Base` WiFi
 2. Open browser: `http://192.168.4.1`
 3. View real-time status of:
    - ESP-NOW connection
@@ -1206,7 +1206,7 @@ minicom -D /dev/serial0 -b 115200
 
 ```bash
 # On another device on the same network
-curl http://aerosentinel-base.local:5000/api/health
+curl http://Stasis-base.local:5000/api/health
 
 # Should return:
 # {"status": "healthy", "uptime": 123, "packets_received": 0}
@@ -1215,7 +1215,7 @@ curl http://aerosentinel-base.local:5000/api/health
 ### Test 3: Check Service Status
 
 ```bash
-sudo systemctl status aerosentinel.service
+sudo systemctl status Stasis.service
 ```
 
 Should show: `Active: active (running)`
@@ -1241,13 +1241,13 @@ sudo cat /proc/cmdline
 
 ```bash
 # Check logs
-journalctl -u aerosentinel.service -n 50
+journalctl -u Stasis.service -n 50
 
 # Check Python syntax
-python3 -m py_compile /home/pi/aerosentinel/station_monitor.py
+python3 -m py_compile /home/pi/Stasis/station_monitor.py
 
 # Run manually to debug
-cd /home/pi/aerosentinel
+cd /home/pi/Stasis
 python3 station_monitor.py
 ```
 
@@ -1293,13 +1293,13 @@ On a Linux computer:
 lsblk
 
 # Create image (replace sdX with your device)
-sudo dd if=/dev/sdX of=aerosentinel-base.img bs=4M status=progress
+sudo dd if=/dev/sdX of=Stasis-base.img bs=4M status=progress
 ```
 
 ### Step 4: Compress for Distribution
 
 ```bash
-gzip aerosentinel-base.img
+gzip Stasis-base.img
 ```
 
 ---
@@ -1314,7 +1314,7 @@ When power is connected to the Raspberry Pi Zero:
    - Serial port becomes available
 
 2. **Service Start** (after boot)
-   - `aerosentinel.service` starts automatically
+   - `Stasis.service` starts automatically
    - Python script begins execution
    - Serial connection to ESP32-C3 established
 
@@ -1325,7 +1325,7 @@ When power is connected to the Raspberry Pi Zero:
    - Generates reports when rover docks
 
 4. **Status Indication**
-   - ESP32-C3 creates WiFi AP: `AeroSentinel-Base`
+   - ESP32-C3 creates WiFi AP: `Stasis-Base`
    - Status page available at `http://192.168.4.1`
 
 ---
