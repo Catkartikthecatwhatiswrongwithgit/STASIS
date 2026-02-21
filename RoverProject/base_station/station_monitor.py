@@ -13,9 +13,6 @@
    7. Maintains an in-memory alert history buffer.
    8. Provides configurable SMS recipients for alerts.
    9. Supports API key authentication for internet deployment.
-  10. Real-time WebSocket support for live updates.
-  11. Geofencing and boundary monitoring.
-  12. Mission scheduling and autonomous operation.
 
  API Endpoints:
    GET  /api/status    → Latest telemetry packet
@@ -31,14 +28,6 @@
    POST /api/config/sms → Update SMS recipients
    GET  /api/export/csv → Export telemetry as CSV
    GET  /api/export/json → Export telemetry as JSON
-   GET  /api/waypoints → Get stored waypoints
-   POST /api/waypoints → Add/update waypoints
-   GET  /api/mission   → Get mission status
-   POST /api/mission   → Start/stop mission
-   GET  /api/geofence  → Get geofence boundaries
-   POST /api/geofence  → Update geofence boundaries
-   GET  /api/battery   → Battery history and predictions
-   GET  /api/trajectory → Path history for mapping
 
  Required packages:
    pip install flask flask-cors pyserial fpdf2
@@ -59,15 +48,8 @@ import sqlite3
 import logging
 import csv
 import io
-import math
-import hashlib
-import base64
-import socket
-import subprocess
 from collections import deque
 from functools import wraps
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, asdict
 
 from flask import Flask, jsonify, request, send_from_directory, abort, Response, make_response
 from flask_cors import CORS
@@ -124,77 +106,8 @@ DEFAULT_CONFIG = {
         "patrol_speed": 200,
         "return_battery": 30,
         "obstacle_distance": 30.0
-    },
-    "geofence": {
-        "enabled": False,
-        "center_lat": 12.9716,
-        "center_lng": 77.5946,
-        "radius_meters": 500,
-        "alert_on_breach": True
-    },
-    "mission": {
-        "auto_start": False,
-        "start_time": "08:00",
-        "end_time": "18:00",
-        "patrol_duration_minutes": 60
     }
 }
-
-
-# ===========================================================================
-#  DATA CLASSES
-# ===========================================================================
-
-@dataclass
-class TelemetryPacket:
-    """Structured telemetry data."""
-    id: int
-    temp: float
-    bat: float
-    lat: float
-    lng: float
-    hazard: bool
-    status: str
-    distance: float
-    accel_x: float
-    accel_y: float
-    heading: float
-    streaming: bool
-    state: int
-    error_code: int
-    uptime: int
-    timestamp: str = ""
-    
-    def to_dict(self) -> Dict:
-        return asdict(self)
-
-
-@dataclass
-class Waypoint:
-    """Navigation waypoint."""
-    lat: float
-    lng: float
-    name: str
-    visited: bool = False
-    order: int = 0
-    
-    def to_dict(self) -> Dict:
-        return asdict(self)
-
-
-@dataclass
-class Alert:
-    """Alert record."""
-    timestamp: str
-    alert_type: str
-    severity: str
-    message: str
-    lat: float
-    lng: float
-    acknowledged: bool = False
-    
-    def to_dict(self) -> Dict:
-        return asdict(self)
 
 
 # ===========================================================================
@@ -210,7 +123,7 @@ logging.basicConfig(
         logging.FileHandler("station_monitor.log", mode="a"),
     ],
 )
-logger = logging.getLogger("STASIS")
+logger = logging.getLogger("AeroSentinel")
 
 
 # ===========================================================================
@@ -228,15 +141,10 @@ latest_telemetry = {
     "distance": -1.0,
     "accelX":   0.0,
     "accelY":   0.0,
-    "heading":  0.0,
-    "streaming": False,
-    "state":    0,
-    "errorCode": 0,
-    "uptime":   0,
 }
 
 last_telemetry_time = 0.0
-alert_history: deque = deque(maxlen=MAX_ALERT_HISTORY)
+alert_history = deque(maxlen=MAX_ALERT_HISTORY)
 serial_port_lock = threading.Lock()
 serial_connection = None
 packet_counter = 0
@@ -253,123 +161,7 @@ daily_stats = {
     "hazards":    0,
     "first_seen": None,
     "last_seen":  None,
-    "distance_traveled": 0.0,
-    "max_speed": 0.0,
 }
-
-# Waypoint management
-waypoints: List[Waypoint] = []
-current_waypoint_index = 0
-
-# Trajectory history for mapping
-trajectory_history: deque = deque(maxlen=500)
-
-# Battery tracking for predictions
-battery_history: deque = deque(maxlen=100)
-battery_prediction = {
-    "time_to_empty": None,
-    "time_to_full": None,
-    "discharge_rate": 0.0,
-    "health_percent": 100.0,
-}
-
-# Mission state
-mission_state = {
-    "active": False,
-    "start_time": None,
-    "waypoints_completed": 0,
-    "total_distance": 0.0,
-    "current_phase": "IDLE",
-}
-
-# Geofence state
-geofence_breach_count = 0
-last_geofence_check = 0.0
-
-
-# ===========================================================================
-#  GEOSPATIAL UTILITIES
-# ===========================================================================
-
-def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Calculate the great-circle distance between two points on Earth.
-    Uses the Haversine formula.
-    Returns distance in meters.
-    """
-    R = 6371000  # Earth's radius in meters
-    
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-    
-    a = math.sin(delta_phi / 2) ** 2 + \
-        math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    
-    return R * c
-
-
-def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Calculate the bearing from point 1 to point 2.
-    Returns bearing in degrees (0-360).
-    """
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_lambda = math.radians(lon2 - lon1)
-    
-    y = math.sin(delta_lambda) * math.cos(phi2)
-    x = math.cos(phi1) * math.sin(phi2) - \
-        math.sin(phi1) * math.cos(phi2) * math.cos(delta_lambda)
-    
-    bearing = math.atan2(y, x)
-    return (math.degrees(bearing) + 360) % 360
-
-
-def is_point_in_geofence(lat: float, lng: float) -> bool:
-    """
-    Check if a point is within the configured geofence.
-    Supports circular geofence (radius from center).
-    """
-    geofence = app_config.get("geofence", {})
-    
-    if not geofence.get("enabled", False):
-        return True  # No geofence configured
-    
-    center_lat = geofence.get("center_lat", 0)
-    center_lng = geofence.get("center_lng", 0)
-    radius = geofence.get("radius_meters", 500)
-    
-    distance = calculate_distance(lat, lng, center_lat, center_lng)
-    return distance <= radius
-
-
-def get_compass_direction(bearing: float) -> str:
-    """Convert bearing to compass direction string."""
-    directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-    index = round(bearing / 45) % 8
-    return directions[index]
-
-
-def format_coordinates(lat: float, lng: float) -> str:
-    """Format coordinates as DMS (degrees, minutes, seconds)."""
-    def to_dms(decimal: float, is_lat: bool) -> str:
-        direction = ''
-        if is_lat:
-            direction = 'N' if decimal >= 0 else 'S'
-        else:
-            direction = 'E' if decimal >= 0 else 'W'
-        
-        decimal = abs(decimal)
-        degrees = int(decimal)
-        minutes = int((decimal - degrees) * 60)
-        seconds = (decimal - degrees - minutes / 60) * 3600
-        
-        return f"{degrees}°{minutes}'{seconds:.1f}\"{direction}"
-    
-    return f"{to_dms(lat, True)}, {to_dms(lng, False)}"
 
 
 # ===========================================================================
@@ -396,7 +188,6 @@ def load_config():
         app_config = DEFAULT_CONFIG.copy()
         save_config()
 
-
 def save_config():
     """Save configuration to file."""
     try:
@@ -405,35 +196,6 @@ def save_config():
         logger.info("Configuration saved to %s", CONFIG_FILE)
     except Exception as e:
         logger.error("Failed to save config: %s", e)
-
-
-def validate_config(config: Dict) -> Tuple[bool, str]:
-    """Validate configuration values."""
-    # Check alert thresholds
-    thresholds = config.get("alert_thresholds", {})
-    if thresholds.get("temp_high", 100) < thresholds.get("temp_low", -50):
-        return False, "temp_high must be greater than temp_low"
-    
-    if thresholds.get("battery_low", 0) < 0 or thresholds.get("battery_low", 0) > 100:
-        return False, "battery_low must be between 0 and 100"
-    
-    # Check base station coordinates
-    base = config.get("base_station", {})
-    lat = base.get("lat", 0)
-    lng = base.get("lng", 0)
-    if lat < -90 or lat > 90:
-        return False, "Invalid latitude (must be -90 to 90)"
-    if lng < -180 or lng > 180:
-        return False, "Invalid longitude (must be -180 to 180)"
-    
-    # Check geofence
-    geofence = config.get("geofence", {})
-    if geofence.get("enabled", False):
-        radius = geofence.get("radius_meters", 0)
-        if radius <= 0 or radius > 10000:
-            return False, "Geofence radius must be between 1 and 10000 meters"
-    
-    return True, "Valid"
 
 
 # ===========================================================================
@@ -466,11 +228,7 @@ def initialize_database():
             status    TEXT,
             distance  REAL,
             accel_x   REAL,
-            accel_y   REAL,
-            heading   REAL,
-            state     INTEGER,
-            error_code INTEGER,
-            uptime    INTEGER
+            accel_y   REAL
         )
     """)
 
@@ -498,42 +256,6 @@ def initialize_database():
         )
     """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS waypoints (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            lat       REAL    NOT NULL,
-            lng       REAL    NOT NULL,
-            name      TEXT    NOT NULL,
-            visited   INTEGER DEFAULT 0,
-            order_idx INTEGER DEFAULT 0,
-            created   TEXT    NOT NULL
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS alerts (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT    NOT NULL,
-            alert_type TEXT   NOT NULL,
-            severity  TEXT    NOT NULL,
-            message   TEXT,
-            lat       REAL,
-            lng       REAL,
-            acknowledged INTEGER DEFAULT 0
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS mission_log (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            start_time TEXT   NOT NULL,
-            end_time  TEXT,
-            status    TEXT    NOT NULL,
-            waypoints_completed INTEGER DEFAULT 0,
-            distance_traveled REAL DEFAULT 0
-        )
-    """)
-
     conn.commit()
     conn.close()
     logger.info("Database initialized successfully.")
@@ -546,10 +268,9 @@ def insert_telemetry(data):
         conn.execute(
             """
             INSERT INTO telemetry
-                (timestamp, pkt_id, temp, bat, lat, lng, hazard, status, distance, 
-                 accel_x, accel_y, heading, state, error_code, uptime)
+                (timestamp, pkt_id, temp, bat, lat, lng, hazard, status, distance, accel_x, accel_y)
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.datetime.now().isoformat(),
@@ -563,10 +284,6 @@ def insert_telemetry(data):
                 data.get("distance", -1.0),
                 data.get("accelX", 0.0),
                 data.get("accelY", 0.0),
-                data.get("heading", 0.0),
-                data.get("state", 0),
-                data.get("errorCode", 0),
-                data.get("uptime", 0),
             ),
         )
         conn.commit()
@@ -588,27 +305,6 @@ def fetch_history(limit=MAX_LOG_ENTRIES):
         return [dict(row) for row in rows]
     except Exception as e:
         logger.error("Failed to fetch history: %s", e)
-        return []
-
-
-def fetch_telemetry_by_date(start_date: str, end_date: str) -> List[Dict]:
-    """Fetch telemetry within a date range."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT * FROM telemetry 
-            WHERE timestamp >= ? AND timestamp <= ?
-            ORDER BY timestamp ASC
-            """,
-            (start_date, end_date)
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-    except Exception as e:
-        logger.error("Failed to fetch telemetry by date: %s", e)
         return []
 
 
@@ -649,63 +345,6 @@ def cleanup_old_data():
         logger.error("Failed to cleanup old data: %s", e)
 
 
-def save_waypoint(waypoint: Waypoint):
-    """Save a waypoint to the database."""
-    try:
-        conn = get_db_connection()
-        conn.execute(
-            """
-            INSERT INTO waypoints (lat, lng, name, visited, order_idx, created)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (waypoint.lat, waypoint.lng, waypoint.name, 
-             1 if waypoint.visited else 0, waypoint.order,
-             datetime.datetime.now().isoformat())
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error("Failed to save waypoint: %s", e)
-
-
-def load_waypoints() -> List[Waypoint]:
-    """Load all waypoints from the database."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM waypoints ORDER BY order_idx")
-        rows = cursor.fetchall()
-        conn.close()
-        return [Waypoint(
-            lat=row['lat'],
-            lng=row['lng'],
-            name=row['name'],
-            visited=bool(row['visited']),
-            order=row['order_idx']
-        ) for row in rows]
-    except Exception as e:
-        logger.error("Failed to load waypoints: %s", e)
-        return []
-
-
-def save_alert(alert: Alert):
-    """Save an alert to the database."""
-    try:
-        conn = get_db_connection()
-        conn.execute(
-            """
-            INSERT INTO alerts (timestamp, alert_type, severity, message, lat, lng, acknowledged)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (alert.timestamp, alert.alert_type, alert.severity,
-             alert.message, alert.lat, alert.lng, 1 if alert.acknowledged else 0)
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error("Failed to save alert: %s", e)
-
-
 # ===========================================================================
 #  STATISTICS TRACKER
 # ===========================================================================
@@ -730,8 +369,6 @@ def update_daily_stats(data):
             "hazards":    0,
             "first_seen": now_str,
             "last_seen":  now_str,
-            "distance_traveled": 0.0,
-            "max_speed": 0.0,
         }
 
     temp = data.get("temp", 0.0)
@@ -765,93 +402,6 @@ def get_computed_stats():
         stats["temp_avg"] = 0.0
     del stats["temp_sum"]
     return stats
-
-
-def update_trajectory(data):
-    """Update trajectory history for mapping."""
-    lat = data.get("lat", 0.0)
-    lng = data.get("lng", 0.0)
-    
-    if lat != 0.0 and lng != 0.0:
-        trajectory_history.append({
-            "lat": lat,
-            "lng": lng,
-            "timestamp": datetime.datetime.now().isoformat(),
-            "status": data.get("status", "UNKNOWN"),
-            "heading": data.get("heading", 0.0)
-        })
-
-
-def update_battery_tracking(data):
-    """Track battery history and predict time to empty."""
-    bat = data.get("bat", 0.0)
-    timestamp = time.time()
-    
-    battery_history.append({
-        "level": bat,
-        "timestamp": timestamp
-    })
-    
-    # Calculate discharge rate if we have enough data
-    if len(battery_history) >= 10:
-        recent = list(battery_history)[-10:]
-        first = recent[0]
-        last = recent[-1]
-        
-        time_diff = last["timestamp"] - first["timestamp"]
-        level_diff = first["level"] - last["level"]
-        
-        if time_diff > 0:
-            discharge_rate = level_diff / (time_diff / 3600)  # % per hour
-            battery_prediction["discharge_rate"] = discharge_rate
-            
-            if discharge_rate > 0:
-                time_to_empty = last["level"] / discharge_rate
-                battery_prediction["time_to_empty"] = time_to_empty
-            else:
-                battery_prediction["time_to_empty"] = None
-
-
-# ===========================================================================
-#  GEOFENCE MONITORING
-# ===========================================================================
-
-def check_geofence(data):
-    """Check if rover is within geofence boundaries."""
-    global geofence_breach_count, last_geofence_check
-    
-    geofence = app_config.get("geofence", {})
-    
-    if not geofence.get("enabled", False):
-        return
-    
-    lat = data.get("lat", 0.0)
-    lng = data.get("lng", 0.0)
-    
-    if lat == 0.0 and lng == 0.0:
-        return  # No valid GPS
-    
-    if not is_point_in_geofence(lat, lng):
-        geofence_breach_count += 1
-        
-        if geofence.get("alert_on_breach", True):
-            alert = Alert(
-                timestamp=datetime.datetime.now().isoformat(),
-                alert_type="GEOFENCE_BREACH",
-                severity="WARNING",
-                message=f"Rover has left geofence boundary. Current location: {lat:.6f}, {lng:.6f}",
-                lat=lat,
-                lng=lng
-            )
-            alert_history.append(alert.to_dict())
-            save_alert(alert)
-            logger.warning("GEOFENCE BREACH at %f, %f", lat, lng)
-    else:
-        # Reset breach count when inside geofence
-        if geofence_breach_count > 0:
-            geofence_breach_count = 0
-    
-    last_geofence_check = time.time()
 
 
 # ===========================================================================
@@ -949,7 +499,6 @@ def _generate_pdf_report(filepath, data, stats, today, now):
     pdf.set_font("Helvetica", "", 11)
     pdf.cell(0, 8, f"Latitude:   {data.get('lat', 0):.6f}", ln=True)
     pdf.cell(0, 8, f"Longitude:  {data.get('lng', 0):.6f}", ln=True)
-    pdf.cell(0, 8, f"Heading:    {data.get('heading', 0):.1f} degrees", ln=True)
     pdf.ln(10)
 
     # Footer
@@ -984,7 +533,6 @@ def _generate_txt_report(filepath, data, stats, today, now):
         "-" * 60,
         "  LAST KNOWN POSITION",
         f"  Lat: {data.get('lat', 0):.6f}   Lng: {data.get('lng', 0):.6f}",
-        f"  Heading: {data.get('heading', 0):.1f} degrees",
         "=" * 60,
         "  Auto-generated by Aero Sentinel Base Station.",
         "=" * 60,
@@ -1028,196 +576,6 @@ def send_command_to_bridge(command_string):
     except Exception as e:
         logger.error("Failed to send command: %s", e)
         return False
-
-
-# ===========================================================================
-#  APRILTAG PROCESSING FOR DOCKING ALIGNMENT
-# ===========================================================================
-
-@dataclass
-class AprilTagData:
-    """AprilTag detection data from ESP32-CAM."""
-    tag_id: int
-    center_x: float
-    center_y: float
-    distance: float
-    angle: float
-    timestamp: str = ""
-    
-    def to_dict(self) -> Dict:
-        return asdict(self)
-
-
-def process_apriltag_for_docking(tag_data: Dict) -> Dict:
-    """
-    Process AprilTag data from ESP32-CAM for charging dock alignment.
-    
-    The flow:
-    1. ESP32-CAM detects AprilTag → sends to S3
-    2. S3 forwards to C3 via ESP-NOW
-    3. C3 forwards to RPi0W via UART
-    4. RPi0W processes and calculates alignment commands
-    5. RPi0W sends alignment commands back to S3 via C3
-    
-    Returns alignment commands for the rover.
-    """
-    try:
-        tag_id = tag_data.get("tag_id", -1)
-        center_x = tag_data.get("center_x", 0)
-        center_y = tag_data.get("center_y", 0)
-        distance = tag_data.get("distance", 0)
-        angle = tag_data.get("angle", 0)
-        
-        # Image center (assuming 320x240 for ESP32-CAM)
-        IMAGE_CENTER_X = 160
-        IMAGE_CENTER_Y = 120
-        
-        # Calculate alignment error
-        x_error = center_x - IMAGE_CENTER_X
-        y_error = center_y - IMAGE_CENTER_Y
-        
-        # Alignment commands
-        commands = {
-            "tag_id": tag_id,
-            "aligned": False,
-            "turn_command": 0,
-            "approach_command": 0,
-            "status": "TRACKING"
-        }
-        
-        # Dead zone for alignment (±10 pixels)
-        DEAD_ZONE = 10
-        
-        if abs(x_error) < DEAD_ZONE and abs(y_error) < DEAD_ZONE:
-            commands["aligned"] = True
-            commands["status"] = "ALIGNED"
-            commands["approach_command"] = 1  # Move forward
-        else:
-            # Calculate turn command (-1 to 1)
-            commands["turn_command"] = -x_error / IMAGE_CENTER_X
-            
-            if distance > 50:  # Still far, approach
-                commands["approach_command"] = 0.5
-            elif distance > 20:  # Close, slow approach
-                commands["approach_command"] = 0.2
-            else:  # Close enough for docking
-                commands["status"] = "DOCK_READY"
-                commands["approach_command"] = 0
-        
-        logger.info("AprilTag processed: tag=%d, aligned=%s, turn=%.2f, approach=%.2f",
-                    tag_id, commands["aligned"], commands["turn_command"], commands["approach_command"])
-        
-        return commands
-        
-    except Exception as e:
-        logger.error("Error processing AprilTag data: %s", e)
-        return {"error": str(e)}
-
-
-def send_alignment_commands(alignment_data: Dict) -> bool:
-    """Send alignment commands to rover via C3 bridge."""
-    if alignment_data.get("error"):
-        return False
-    
-    # Build command string
-    cmd = f"ALIGN:{alignment_data['turn_command']:.2f},{alignment_data['approach_command']:.2f}"
-    return send_command_to_bridge(cmd)
-
-
-# ===========================================================================
-#  LCD DISPLAY COMMANDS (via C3 GPIO Extender)
-# ===========================================================================
-
-def send_lcd_command(line1: str, line2: str = "") -> bool:
-    """
-    Send display command to C3 for LCD output.
-    C3 acts as GPIO extender, receiving display commands via UART.
-    """
-    # Pad/truncate to 16 characters for 16x2 LCD
-    line1 = line1[:16].ljust(16)
-    line2 = line2[:16].ljust(16)
-    
-    cmd = f"LCD:{line1}:{line2}"
-    return send_command_to_bridge(cmd)
-
-
-def update_lcd_status(status: str, details: str = "") -> bool:
-    """Update LCD with current rover status."""
-    return send_lcd_command(status, details)
-
-
-def display_docking_status(phase: str, distance: float = 0) -> bool:
-    """Display docking progress on LCD."""
-    line1 = f"Docking: {phase}"
-    line2 = f"Dist: {distance:.1f}cm"
-    return send_lcd_command(line1, line2)
-
-
-def display_charging_status(battery: float, time_remaining: str = "") -> bool:
-    """Display charging status on LCD."""
-    line1 = f"Charging: {battery:.0f}%"
-    line2 = time_remaining if time_remaining else "Please wait..."
-    return send_lcd_command(line1, line2)
-
-
-# ===========================================================================
-#  CHARGING DOCKING SEQUENCE
-# ===========================================================================
-
-def handle_docking_sequence(telemetry: Dict) -> Dict:
-    """
-    Handle the complete docking sequence:
-    1. GPS approach (rough navigation)
-    2. AprilTag detection (precise alignment)
-    3. Docking connection
-    4. Charging start
-    5. Report generation
-    """
-    result = {
-        "phase": "IDLE",
-        "success": False,
-        "message": ""
-    }
-    
-    status = telemetry.get("status", "")
-    battery = telemetry.get("bat", 0)
-    
-    # Check if rover is in return-to-base mode
-    if status == "RETURN":
-        result["phase"] = "GPS_APPROACH"
-        result["message"] = "Rover approaching via GPS"
-        update_lcd_status("Rover Returning", f"Battery: {battery:.0f}%")
-    
-    # Check for AprilTag data
-    elif "apriltag" in telemetry:
-        result["phase"] = "APRILTAG_ALIGN"
-        alignment = process_apriltag_for_docking(telemetry["apriltag"])
-        send_alignment_commands(alignment)
-        
-        if alignment.get("aligned"):
-            result["message"] = "Aligned, approaching dock"
-            display_docking_status("Aligned", alignment.get("distance", 0))
-        else:
-            result["message"] = "Aligning with dock"
-            display_docking_status("Aligning", alignment.get("distance", 0))
-    
-    # Check for docked status
-    elif status == "DOCKED":
-        result["phase"] = "CHARGING"
-        result["message"] = "Rover docked, charging"
-        display_charging_status(battery)
-    
-    # Check for charging complete
-    elif status == "CHARGED" or battery >= 95:
-        result["phase"] = "COMPLETE"
-        result["success"] = True
-        result["message"] = "Charging complete"
-        update_lcd_status("Charge Complete", f"{battery:.0f}%")
-        
-        # Trigger report generation
-        generate_daily_report()
-    
-    return result
 
 
 def serial_listener_thread():
@@ -1264,15 +622,6 @@ def serial_listener_thread():
 
                 # ---- Statistics ----
                 update_daily_stats(data)
-
-                # ---- Trajectory tracking ----
-                update_trajectory(data)
-
-                # ---- Battery tracking ----
-                update_battery_tracking(data)
-
-                # ---- Geofence check ----
-                check_geofence(data)
 
                 # ---- Alert tracking ----
                 if data.get("hazard", False):
@@ -1360,7 +709,6 @@ def api_get_status():
     response["online"]          = elapsed < TELEMETRY_TIMEOUT
     response["seconds_ago"]     = round(elapsed, 1)
     response["total_packets"]   = packet_counter
-    response["geofence_breaches"] = geofence_breach_count
     return jsonify(response)
 
 
@@ -1380,7 +728,6 @@ def api_get_stats():
     """Returns aggregated daily statistics."""
     stats = get_computed_stats()
     stats["daily_db_packets"] = fetch_daily_packet_count()
-    stats["battery_prediction"] = battery_prediction
     return jsonify(stats)
 
 
@@ -1425,11 +772,7 @@ def api_send_command():
         return jsonify({"error": "Missing 'cmd' field"}), 400
 
     command = body["cmd"].strip().upper()
-    valid_commands = {
-        "FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP",
-        "RETURN", "PATROL", "DOCK", "CAPTURE", 
-        "STREAM_ON", "STREAM_OFF", "RECORD_START", "RECORD_STOP"
-    }
+    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
 
     if command not in valid_commands:
         return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
@@ -1452,7 +795,6 @@ def api_health():
         "total_packets":    packet_counter,
         "database":         DATABASE_PATH,
         "uptime_note":      "Base station is running.",
-        "geofence_breaches": geofence_breach_count,
     })
 
 
@@ -1471,11 +813,6 @@ def api_update_config():
     body = request.get_json(silent=True)
     if not body:
         return jsonify({"error": "No configuration data provided"}), 400
-    
-    # Validate configuration
-    valid, message = validate_config(body)
-    if not valid:
-        return jsonify({"error": f"Invalid configuration: {message}"}), 400
     
     # Update configuration
     for key in body:
@@ -1517,8 +854,7 @@ def api_export_csv():
         writer = csv.writer(output)
         
         # Header
-        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 
-                        'distance', 'accel_x', 'accel_y', 'heading', 'state', 'error_code', 'uptime'])
+        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
         
         # Data
         for row in history:
@@ -1532,11 +868,7 @@ def api_export_csv():
                 row.get('status', ''),
                 row.get('distance', ''),
                 row.get('accel_x', ''),
-                row.get('accel_y', ''),
-                row.get('heading', ''),
-                row.get('state', ''),
-                row.get('error_code', ''),
-                row.get('uptime', '')
+                row.get('accel_y', '')
             ])
         
         output.seek(0)
@@ -1564,142 +896,175 @@ def api_export_json():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/waypoints", methods=["GET"])
-@require_api_key
-def api_get_waypoints():
-    """Get all stored waypoints."""
-    wps = load_waypoints()
-    return jsonify({"waypoints": [wp.to_dict() for wp in wps]})
+# ===========================================================================
+#  MAIN ENTRY POINT
+# ===========================================================================
 
+def main():
+    """Application entry point."""
+    print()
+    print("=" * 60)
+    print("  AERO SENTINEL - BASE STATION MONITOR")
+    print("  Starting up...")
+    print("=" * 60)
+    print()
 
-@app.route("/api/waypoints", methods=["POST"])
-@require_api_key
-def api_add_waypoint():
-    """Add a new waypoint."""
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "No data provided"}), 400
+    # Load configuration
+    load_config()
     
-    lat = body.get("lat")
-    lng = body.get("lng")
-    name = body.get("name", f"WP{len(waypoints) + 1}")
+    # Initialize the database
+    initialize_database()
+    ensure_report_directory()
+
+    # Cleanup old data
+    cleanup_old_data()
+
+    # Start serial listener
+    serial_thread = threading.Thread(
+        target=serial_listener_thread,
+        name="SerialListener",
+        daemon=True,
+    )
+    serial_thread.start()
+    logger.info("Serial listener thread started.")
+
+    # Start Flask
+    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
+    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
     
-    if lat is None or lng is None:
-        return jsonify({"error": "Missing lat or lng"}), 400
-    
-    waypoint = Waypoint(lat=lat, lng=lng, name=name, order=len(waypoints))
-    waypoints.append(waypoint)
-    save_waypoint(waypoint)
-    
-    return jsonify({"status": "ok", "waypoint": waypoint.to_dict()})
+    app.run(
+        host=FLASK_HOST,
+        port=FLASK_PORT,
+        debug=False,
+        use_reloader=False,
+    )
 
 
-@app.route("/api/trajectory", methods=["GET"])
-@require_api_key
-def api_get_trajectory():
-    """Get trajectory history for mapping."""
-    return jsonify({"trajectory": list(trajectory_history)})
+if __name__ == "__main__":
+    main()
+    command = body["cmd"].strip().upper()
+    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
+
+    if command not in valid_commands:
+        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
+
+    success = send_command_to_bridge(command)
+    if success:
+        return jsonify({"status": "ok", "command": command})
+    else:
+        return jsonify({"error": "Serial port not available"}), 503
 
 
-@app.route("/api/battery", methods=["GET"])
-@require_api_key
-def api_get_battery():
-    """Get battery history and predictions."""
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """System health check endpoint (no auth required)."""
+    serial_ok = serial_connection is not None and serial_connection.is_open
     return jsonify({
-        "history": list(battery_history),
-        "prediction": battery_prediction,
-        "current": latest_telemetry.get("bat", 0)
+        "status":           "healthy",
+        "serial_connected": serial_ok,
+        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
+        "total_packets":    packet_counter,
+        "database":         DATABASE_PATH,
+        "uptime_note":      "Base station is running.",
     })
 
 
-@app.route("/api/geofence", methods=["GET"])
+@app.route("/api/config", methods=["GET"])
 @require_api_key
-def api_get_geofence():
-    """Get geofence configuration."""
-    return jsonify(app_config.get("geofence", {}))
+def api_get_config():
+    """Get current configuration."""
+    return jsonify(app_config)
 
 
-@app.route("/api/geofence", methods=["POST"])
+@app.route("/api/config", methods=["POST"])
 @require_api_key
-def api_update_geofence():
-    """Update geofence configuration."""
+def api_update_config():
+    """Update configuration."""
+    global app_config
     body = request.get_json(silent=True)
     if not body:
-        return jsonify({"error": "No data provided"}), 400
+        return jsonify({"error": "No configuration data provided"}), 400
     
-    app_config["geofence"] = body
+    # Update configuration
+    for key in body:
+        if key in app_config:
+            app_config[key] = body[key]
+    
+    save_config()
+    return jsonify({"status": "ok", "config": app_config})
+
+
+@app.route("/api/config/sms", methods=["GET", "POST"])
+@require_api_key
+def api_sms_config():
+    """Get or update SMS recipients."""
+    if request.method == "GET":
+        return jsonify({"recipients": app_config.get("sms_recipients", [])})
+    
+    body = request.get_json(silent=True)
+    if not body or "recipients" not in body:
+        return jsonify({"error": "Missing 'recipients' field"}), 400
+    
+    app_config["sms_recipients"] = body["recipients"]
     save_config()
     
-    return jsonify({"status": "ok", "geofence": app_config["geofence"]})
-
-
-@app.route("/api/mission", methods=["GET"])
-@require_api_key
-def api_get_mission():
-    """Get mission status."""
-    return jsonify(mission_state)
-
-
-@app.route("/api/mission", methods=["POST"])
-@require_api_key
-def api_control_mission():
-    """Start or stop a mission."""
-    global mission_state
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "No data provided"}), 400
-    
-    action = body.get("action", "").lower()
-    
-    if action == "start":
-        mission_state["active"] = True
-        mission_state["start_time"] = datetime.datetime.now().isoformat()
-        mission_state["current_phase"] = "PATROL"
-        send_command_to_bridge("PATROL")
-    elif action == "stop":
-        mission_state["active"] = False
-        mission_state["current_phase"] = "IDLE"
-        send_command_to_bridge("STOP")
-    elif action == "return":
-        mission_state["active"] = False
-        mission_state["current_phase"] = "RETURNING"
-        send_command_to_bridge("RETURN")
-    else:
-        return jsonify({"error": "Invalid action. Use 'start', 'stop', or 'return'"}), 400
-    
-    return jsonify({"status": "ok", "mission": mission_state})
-
-
-@app.route("/api/distance", methods=["GET"])
-@require_api_key
-def api_get_distance():
-    """Calculate distance from base to rover."""
-    base = app_config.get("base_station", {})
-    base_lat = base.get("lat", 0)
-    base_lng = base.get("lng", 0)
-    
-    rover_lat = latest_telemetry.get("lat", 0)
-    rover_lng = latest_telemetry.get("lng", 0)
-    
-    distance = calculate_distance(base_lat, base_lng, rover_lat, rover_lng)
-    bearing = calculate_bearing(base_lat, base_lng, rover_lat, rover_lng)
-    direction = get_compass_direction(bearing)
-    
     return jsonify({
-        "distance_meters": distance,
-        "bearing_degrees": bearing,
-        "compass_direction": direction,
-        "rover_location": {
-            "lat": rover_lat,
-            "lng": rover_lng,
-            "formatted": format_coordinates(rover_lat, rover_lng)
-        },
-        "base_location": {
-            "lat": base_lat,
-            "lng": base_lng,
-            "formatted": format_coordinates(base_lat, base_lng)
-        }
+        "status": "ok",
+        "recipients": app_config["sms_recipients"]
     })
+
+
+@app.route("/api/export/csv", methods=["GET"])
+@require_api_key
+def api_export_csv():
+    """Export telemetry data as CSV."""
+    try:
+        history = fetch_history(1000)
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header
+        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
+        
+        # Data
+        for row in history:
+            writer.writerow([
+                row.get('timestamp', ''),
+                row.get('temp', ''),
+                row.get('bat', ''),
+                row.get('lat', ''),
+                row.get('lng', ''),
+                row.get('hazard', ''),
+                row.get('status', ''),
+                row.get('distance', ''),
+                row.get('accel_x', ''),
+                row.get('accel_y', '')
+            ])
+        
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
+        return response
+    except Exception as e:
+        logger.error("Failed to export CSV: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/json", methods=["GET"])
+@require_api_key
+def api_export_json():
+    """Export telemetry data as JSON."""
+    try:
+        history = fetch_history(1000)
+        response = make_response(json.dumps(history, indent=2))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
+        return response
+    except Exception as e:
+        logger.error("Failed to export JSON: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 # ===========================================================================
@@ -1721,10 +1086,6 @@ def main():
     # Initialize the database
     initialize_database()
     ensure_report_directory()
-
-    # Load waypoints
-    global waypoints
-    waypoints = load_waypoints()
 
     # Cleanup old data
     cleanup_old_data()
@@ -1753,142 +1114,129 @@ def main():
 if __name__ == "__main__":
     main()
 
-@app.route("/api/waypoints", methods=["GET"])
-@require_api_key
-def api_get_waypoints():
-    """Get all stored waypoints."""
-    wps = load_waypoints()
-    return jsonify({"waypoints": [wp.to_dict() for wp in wps]})
+    command = body["cmd"].strip().upper()
+    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
+
+    if command not in valid_commands:
+        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
+
+    success = send_command_to_bridge(command)
+    if success:
+        return jsonify({"status": "ok", "command": command})
+    else:
+        return jsonify({"error": "Serial port not available"}), 503
 
 
-@app.route("/api/waypoints", methods=["POST"])
-@require_api_key
-def api_add_waypoint():
-    """Add a new waypoint."""
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "No data provided"}), 400
-    
-    lat = body.get("lat")
-    lng = body.get("lng")
-    name = body.get("name", f"WP{len(waypoints) + 1}")
-    
-    if lat is None or lng is None:
-        return jsonify({"error": "Missing lat or lng"}), 400
-    
-    waypoint = Waypoint(lat=lat, lng=lng, name=name, order=len(waypoints))
-    waypoints.append(waypoint)
-    save_waypoint(waypoint)
-    
-    return jsonify({"status": "ok", "waypoint": waypoint.to_dict()})
-
-
-@app.route("/api/trajectory", methods=["GET"])
-@require_api_key
-def api_get_trajectory():
-    """Get trajectory history for mapping."""
-    return jsonify({"trajectory": list(trajectory_history)})
-
-
-@app.route("/api/battery", methods=["GET"])
-@require_api_key
-def api_get_battery():
-    """Get battery history and predictions."""
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """System health check endpoint (no auth required)."""
+    serial_ok = serial_connection is not None and serial_connection.is_open
     return jsonify({
-        "history": list(battery_history),
-        "prediction": battery_prediction,
-        "current": latest_telemetry.get("bat", 0)
+        "status":           "healthy",
+        "serial_connected": serial_ok,
+        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
+        "total_packets":    packet_counter,
+        "database":         DATABASE_PATH,
+        "uptime_note":      "Base station is running.",
     })
 
 
-@app.route("/api/geofence", methods=["GET"])
+@app.route("/api/config", methods=["GET"])
 @require_api_key
-def api_get_geofence():
-    """Get geofence configuration."""
-    return jsonify(app_config.get("geofence", {}))
+def api_get_config():
+    """Get current configuration."""
+    return jsonify(app_config)
 
 
-@app.route("/api/geofence", methods=["POST"])
+@app.route("/api/config", methods=["POST"])
 @require_api_key
-def api_update_geofence():
-    """Update geofence configuration."""
+def api_update_config():
+    """Update configuration."""
+    global app_config
     body = request.get_json(silent=True)
     if not body:
-        return jsonify({"error": "No data provided"}), 400
+        return jsonify({"error": "No configuration data provided"}), 400
     
-    app_config["geofence"] = body
+    # Update configuration
+    for key in body:
+        if key in app_config:
+            app_config[key] = body[key]
+    
+    save_config()
+    return jsonify({"status": "ok", "config": app_config})
+
+
+@app.route("/api/config/sms", methods=["GET", "POST"])
+@require_api_key
+def api_sms_config():
+    """Get or update SMS recipients."""
+    if request.method == "GET":
+        return jsonify({"recipients": app_config.get("sms_recipients", [])})
+    
+    body = request.get_json(silent=True)
+    if not body or "recipients" not in body:
+        return jsonify({"error": "Missing 'recipients' field"}), 400
+    
+    app_config["sms_recipients"] = body["recipients"]
     save_config()
     
-    return jsonify({"status": "ok", "geofence": app_config["geofence"]})
-
-
-@app.route("/api/mission", methods=["GET"])
-@require_api_key
-def api_get_mission():
-    """Get mission status."""
-    return jsonify(mission_state)
-
-
-@app.route("/api/mission", methods=["POST"])
-@require_api_key
-def api_control_mission():
-    """Start or stop a mission."""
-    global mission_state
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "No data provided"}), 400
-    
-    action = body.get("action", "").lower()
-    
-    if action == "start":
-        mission_state["active"] = True
-        mission_state["start_time"] = datetime.datetime.now().isoformat()
-        mission_state["current_phase"] = "PATROL"
-        send_command_to_bridge("PATROL")
-    elif action == "stop":
-        mission_state["active"] = False
-        mission_state["current_phase"] = "IDLE"
-        send_command_to_bridge("STOP")
-    elif action == "return":
-        mission_state["active"] = False
-        mission_state["current_phase"] = "RETURNING"
-        send_command_to_bridge("RETURN")
-    else:
-        return jsonify({"error": "Invalid action. Use 'start', 'stop', or 'return'"}), 400
-    
-    return jsonify({"status": "ok", "mission": mission_state})
-
-
-@app.route("/api/distance", methods=["GET"])
-@require_api_key
-def api_get_distance():
-    """Calculate distance from base to rover."""
-    base = app_config.get("base_station", {})
-    base_lat = base.get("lat", 0)
-    base_lng = base.get("lng", 0)
-    
-    rover_lat = latest_telemetry.get("lat", 0)
-    rover_lng = latest_telemetry.get("lng", 0)
-    
-    distance = calculate_distance(base_lat, base_lng, rover_lat, rover_lng)
-    bearing = calculate_bearing(base_lat, base_lng, rover_lat, rover_lng)
-    direction = get_compass_direction(bearing)
-    
     return jsonify({
-        "distance_meters": distance,
-        "bearing_degrees": bearing,
-        "compass_direction": direction,
-        "rover_location": {
-            "lat": rover_lat,
-            "lng": rover_lng,
-            "formatted": format_coordinates(rover_lat, rover_lng)
-        },
-        "base_location": {
-            "lat": base_lat,
-            "lng": base_lng,
-            "formatted": format_coordinates(base_lat, base_lng)
-        }
+        "status": "ok",
+        "recipients": app_config["sms_recipients"]
     })
+
+
+@app.route("/api/export/csv", methods=["GET"])
+@require_api_key
+def api_export_csv():
+    """Export telemetry data as CSV."""
+    try:
+        history = fetch_history(1000)
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header
+        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
+        
+        # Data
+        for row in history:
+            writer.writerow([
+                row.get('timestamp', ''),
+                row.get('temp', ''),
+                row.get('bat', ''),
+                row.get('lat', ''),
+                row.get('lng', ''),
+                row.get('hazard', ''),
+                row.get('status', ''),
+                row.get('distance', ''),
+                row.get('accel_x', ''),
+                row.get('accel_y', '')
+            ])
+        
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
+        return response
+    except Exception as e:
+        logger.error("Failed to export CSV: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/json", methods=["GET"])
+@require_api_key
+def api_export_json():
+    """Export telemetry data as JSON."""
+    try:
+        history = fetch_history(1000)
+        response = make_response(json.dumps(history, indent=2))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
+        return response
+    except Exception as e:
+        logger.error("Failed to export JSON: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 # ===========================================================================
@@ -1910,10 +1258,6 @@ def main():
     # Initialize the database
     initialize_database()
     ensure_report_directory()
-
-    # Load waypoints
-    global waypoints
-    waypoints = load_waypoints()
 
     # Cleanup old data
     cleanup_old_data()
@@ -1941,4 +1285,176 @@ def main():
 
 if __name__ == "__main__":
     main()
+    command = body["cmd"].strip().upper()
+    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
+
+    if command not in valid_commands:
+        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
+
+    success = send_command_to_bridge(command)
+    if success:
+        return jsonify({"status": "ok", "command": command})
+    else:
+        return jsonify({"error": "Serial port not available"}), 503
+
+
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """System health check endpoint (no auth required)."""
+    serial_ok = serial_connection is not None and serial_connection.is_open
+    return jsonify({
+        "status":           "healthy",
+        "serial_connected": serial_ok,
+        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
+        "total_packets":    packet_counter,
+        "database":         DATABASE_PATH,
+        "uptime_note":      "Base station is running.",
+    })
+
+
+@app.route("/api/config", methods=["GET"])
+@require_api_key
+def api_get_config():
+    """Get current configuration."""
+    return jsonify(app_config)
+
+
+@app.route("/api/config", methods=["POST"])
+@require_api_key
+def api_update_config():
+    """Update configuration."""
+    global app_config
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "No configuration data provided"}), 400
+    
+    # Update configuration
+    for key in body:
+        if key in app_config:
+            app_config[key] = body[key]
+    
+    save_config()
+    return jsonify({"status": "ok", "config": app_config})
+
+
+@app.route("/api/config/sms", methods=["GET", "POST"])
+@require_api_key
+def api_sms_config():
+    """Get or update SMS recipients."""
+    if request.method == "GET":
+        return jsonify({"recipients": app_config.get("sms_recipients", [])})
+    
+    body = request.get_json(silent=True)
+    if not body or "recipients" not in body:
+        return jsonify({"error": "Missing 'recipients' field"}), 400
+    
+    app_config["sms_recipients"] = body["recipients"]
+    save_config()
+    
+    return jsonify({
+        "status": "ok",
+        "recipients": app_config["sms_recipients"]
+    })
+
+
+@app.route("/api/export/csv", methods=["GET"])
+@require_api_key
+def api_export_csv():
+    """Export telemetry data as CSV."""
+    try:
+        history = fetch_history(1000)
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header
+        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
+        
+        # Data
+        for row in history:
+            writer.writerow([
+                row.get('timestamp', ''),
+                row.get('temp', ''),
+                row.get('bat', ''),
+                row.get('lat', ''),
+                row.get('lng', ''),
+                row.get('hazard', ''),
+                row.get('status', ''),
+                row.get('distance', ''),
+                row.get('accel_x', ''),
+                row.get('accel_y', '')
+            ])
+        
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
+        return response
+    except Exception as e:
+        logger.error("Failed to export CSV: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/json", methods=["GET"])
+@require_api_key
+def api_export_json():
+    """Export telemetry data as JSON."""
+    try:
+        history = fetch_history(1000)
+        response = make_response(json.dumps(history, indent=2))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
+        return response
+    except Exception as e:
+        logger.error("Failed to export JSON: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ===========================================================================
+#  MAIN ENTRY POINT
+# ===========================================================================
+
+def main():
+    """Application entry point."""
+    print()
+    print("=" * 60)
+    print("  AERO SENTINEL - BASE STATION MONITOR")
+    print("  Starting up...")
+    print("=" * 60)
+    print()
+
+    # Load configuration
+    load_config()
+    
+    # Initialize the database
+    initialize_database()
+    ensure_report_directory()
+
+    # Cleanup old data
+    cleanup_old_data()
+
+    # Start serial listener
+    serial_thread = threading.Thread(
+        target=serial_listener_thread,
+        name="SerialListener",
+        daemon=True,
+    )
+    serial_thread.start()
+    logger.info("Serial listener thread started.")
+
+    # Start Flask
+    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
+    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
+    
+    app.run(
+        host=FLASK_HOST,
+        port=FLASK_PORT,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
 
