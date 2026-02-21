@@ -670,7 +670,7 @@ void onEspNowRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int
   }
 }
 
-void onEspNowSent(const wifi_pkt_tx_info_t *tx_info, esp_now_send_status_t status) {
+void onEspNowSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
   // Could add retry logic here
 }
 
@@ -1240,3 +1240,9 @@ void loop() {
   delay(10);
 }
 //67 hehehehhehehehehehhe
+  
+  // Small delay to prevent tight loop
+  delay(10);
+}
+//67 hehehehhehehehehehhe
+
