@@ -1030,6 +1030,196 @@ def send_command_to_bridge(command_string):
         return False
 
 
+# ===========================================================================
+#  APRILTAG PROCESSING FOR DOCKING ALIGNMENT
+# ===========================================================================
+
+@dataclass
+class AprilTagData:
+    """AprilTag detection data from ESP32-CAM."""
+    tag_id: int
+    center_x: float
+    center_y: float
+    distance: float
+    angle: float
+    timestamp: str = ""
+    
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+
+def process_apriltag_for_docking(tag_data: Dict) -> Dict:
+    """
+    Process AprilTag data from ESP32-CAM for charging dock alignment.
+    
+    The flow:
+    1. ESP32-CAM detects AprilTag → sends to S3
+    2. S3 forwards to C3 via ESP-NOW
+    3. C3 forwards to RPi0W via UART
+    4. RPi0W processes and calculates alignment commands
+    5. RPi0W sends alignment commands back to S3 via C3
+    
+    Returns alignment commands for the rover.
+    """
+    try:
+        tag_id = tag_data.get("tag_id", -1)
+        center_x = tag_data.get("center_x", 0)
+        center_y = tag_data.get("center_y", 0)
+        distance = tag_data.get("distance", 0)
+        angle = tag_data.get("angle", 0)
+        
+        # Image center (assuming 320x240 for ESP32-CAM)
+        IMAGE_CENTER_X = 160
+        IMAGE_CENTER_Y = 120
+        
+        # Calculate alignment error
+        x_error = center_x - IMAGE_CENTER_X
+        y_error = center_y - IMAGE_CENTER_Y
+        
+        # Alignment commands
+        commands = {
+            "tag_id": tag_id,
+            "aligned": False,
+            "turn_command": 0,
+            "approach_command": 0,
+            "status": "TRACKING"
+        }
+        
+        # Dead zone for alignment (±10 pixels)
+        DEAD_ZONE = 10
+        
+        if abs(x_error) < DEAD_ZONE and abs(y_error) < DEAD_ZONE:
+            commands["aligned"] = True
+            commands["status"] = "ALIGNED"
+            commands["approach_command"] = 1  # Move forward
+        else:
+            # Calculate turn command (-1 to 1)
+            commands["turn_command"] = -x_error / IMAGE_CENTER_X
+            
+            if distance > 50:  # Still far, approach
+                commands["approach_command"] = 0.5
+            elif distance > 20:  # Close, slow approach
+                commands["approach_command"] = 0.2
+            else:  # Close enough for docking
+                commands["status"] = "DOCK_READY"
+                commands["approach_command"] = 0
+        
+        logger.info("AprilTag processed: tag=%d, aligned=%s, turn=%.2f, approach=%.2f",
+                    tag_id, commands["aligned"], commands["turn_command"], commands["approach_command"])
+        
+        return commands
+        
+    except Exception as e:
+        logger.error("Error processing AprilTag data: %s", e)
+        return {"error": str(e)}
+
+
+def send_alignment_commands(alignment_data: Dict) -> bool:
+    """Send alignment commands to rover via C3 bridge."""
+    if alignment_data.get("error"):
+        return False
+    
+    # Build command string
+    cmd = f"ALIGN:{alignment_data['turn_command']:.2f},{alignment_data['approach_command']:.2f}"
+    return send_command_to_bridge(cmd)
+
+
+# ===========================================================================
+#  LCD DISPLAY COMMANDS (via C3 GPIO Extender)
+# ===========================================================================
+
+def send_lcd_command(line1: str, line2: str = "") -> bool:
+    """
+    Send display command to C3 for LCD output.
+    C3 acts as GPIO extender, receiving display commands via UART.
+    """
+    # Pad/truncate to 16 characters for 16x2 LCD
+    line1 = line1[:16].ljust(16)
+    line2 = line2[:16].ljust(16)
+    
+    cmd = f"LCD:{line1}:{line2}"
+    return send_command_to_bridge(cmd)
+
+
+def update_lcd_status(status: str, details: str = "") -> bool:
+    """Update LCD with current rover status."""
+    return send_lcd_command(status, details)
+
+
+def display_docking_status(phase: str, distance: float = 0) -> bool:
+    """Display docking progress on LCD."""
+    line1 = f"Docking: {phase}"
+    line2 = f"Dist: {distance:.1f}cm"
+    return send_lcd_command(line1, line2)
+
+
+def display_charging_status(battery: float, time_remaining: str = "") -> bool:
+    """Display charging status on LCD."""
+    line1 = f"Charging: {battery:.0f}%"
+    line2 = time_remaining if time_remaining else "Please wait..."
+    return send_lcd_command(line1, line2)
+
+
+# ===========================================================================
+#  CHARGING DOCKING SEQUENCE
+# ===========================================================================
+
+def handle_docking_sequence(telemetry: Dict) -> Dict:
+    """
+    Handle the complete docking sequence:
+    1. GPS approach (rough navigation)
+    2. AprilTag detection (precise alignment)
+    3. Docking connection
+    4. Charging start
+    5. Report generation
+    """
+    result = {
+        "phase": "IDLE",
+        "success": False,
+        "message": ""
+    }
+    
+    status = telemetry.get("status", "")
+    battery = telemetry.get("bat", 0)
+    
+    # Check if rover is in return-to-base mode
+    if status == "RETURN":
+        result["phase"] = "GPS_APPROACH"
+        result["message"] = "Rover approaching via GPS"
+        update_lcd_status("Rover Returning", f"Battery: {battery:.0f}%")
+    
+    # Check for AprilTag data
+    elif "apriltag" in telemetry:
+        result["phase"] = "APRILTAG_ALIGN"
+        alignment = process_apriltag_for_docking(telemetry["apriltag"])
+        send_alignment_commands(alignment)
+        
+        if alignment.get("aligned"):
+            result["message"] = "Aligned, approaching dock"
+            display_docking_status("Aligned", alignment.get("distance", 0))
+        else:
+            result["message"] = "Aligning with dock"
+            display_docking_status("Aligning", alignment.get("distance", 0))
+    
+    # Check for docked status
+    elif status == "DOCKED":
+        result["phase"] = "CHARGING"
+        result["message"] = "Rover docked, charging"
+        display_charging_status(battery)
+    
+    # Check for charging complete
+    elif status == "CHARGED" or battery >= 95:
+        result["phase"] = "COMPLETE"
+        result["success"] = True
+        result["message"] = "Charging complete"
+        update_lcd_status("Charge Complete", f"{battery:.0f}%")
+        
+        # Trigger report generation
+        generate_daily_report()
+    
+    return result
+
+
 def serial_listener_thread():
     """Background thread that continuously reads JSON telemetry from the ESP32-C3 bridge."""
     global latest_telemetry, last_telemetry_time, packet_counter
@@ -1562,3 +1752,193 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+@app.route("/api/waypoints", methods=["GET"])
+@require_api_key
+def api_get_waypoints():
+    """Get all stored waypoints."""
+    wps = load_waypoints()
+    return jsonify({"waypoints": [wp.to_dict() for wp in wps]})
+
+
+@app.route("/api/waypoints", methods=["POST"])
+@require_api_key
+def api_add_waypoint():
+    """Add a new waypoint."""
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "No data provided"}), 400
+    
+    lat = body.get("lat")
+    lng = body.get("lng")
+    name = body.get("name", f"WP{len(waypoints) + 1}")
+    
+    if lat is None or lng is None:
+        return jsonify({"error": "Missing lat or lng"}), 400
+    
+    waypoint = Waypoint(lat=lat, lng=lng, name=name, order=len(waypoints))
+    waypoints.append(waypoint)
+    save_waypoint(waypoint)
+    
+    return jsonify({"status": "ok", "waypoint": waypoint.to_dict()})
+
+
+@app.route("/api/trajectory", methods=["GET"])
+@require_api_key
+def api_get_trajectory():
+    """Get trajectory history for mapping."""
+    return jsonify({"trajectory": list(trajectory_history)})
+
+
+@app.route("/api/battery", methods=["GET"])
+@require_api_key
+def api_get_battery():
+    """Get battery history and predictions."""
+    return jsonify({
+        "history": list(battery_history),
+        "prediction": battery_prediction,
+        "current": latest_telemetry.get("bat", 0)
+    })
+
+
+@app.route("/api/geofence", methods=["GET"])
+@require_api_key
+def api_get_geofence():
+    """Get geofence configuration."""
+    return jsonify(app_config.get("geofence", {}))
+
+
+@app.route("/api/geofence", methods=["POST"])
+@require_api_key
+def api_update_geofence():
+    """Update geofence configuration."""
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "No data provided"}), 400
+    
+    app_config["geofence"] = body
+    save_config()
+    
+    return jsonify({"status": "ok", "geofence": app_config["geofence"]})
+
+
+@app.route("/api/mission", methods=["GET"])
+@require_api_key
+def api_get_mission():
+    """Get mission status."""
+    return jsonify(mission_state)
+
+
+@app.route("/api/mission", methods=["POST"])
+@require_api_key
+def api_control_mission():
+    """Start or stop a mission."""
+    global mission_state
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "No data provided"}), 400
+    
+    action = body.get("action", "").lower()
+    
+    if action == "start":
+        mission_state["active"] = True
+        mission_state["start_time"] = datetime.datetime.now().isoformat()
+        mission_state["current_phase"] = "PATROL"
+        send_command_to_bridge("PATROL")
+    elif action == "stop":
+        mission_state["active"] = False
+        mission_state["current_phase"] = "IDLE"
+        send_command_to_bridge("STOP")
+    elif action == "return":
+        mission_state["active"] = False
+        mission_state["current_phase"] = "RETURNING"
+        send_command_to_bridge("RETURN")
+    else:
+        return jsonify({"error": "Invalid action. Use 'start', 'stop', or 'return'"}), 400
+    
+    return jsonify({"status": "ok", "mission": mission_state})
+
+
+@app.route("/api/distance", methods=["GET"])
+@require_api_key
+def api_get_distance():
+    """Calculate distance from base to rover."""
+    base = app_config.get("base_station", {})
+    base_lat = base.get("lat", 0)
+    base_lng = base.get("lng", 0)
+    
+    rover_lat = latest_telemetry.get("lat", 0)
+    rover_lng = latest_telemetry.get("lng", 0)
+    
+    distance = calculate_distance(base_lat, base_lng, rover_lat, rover_lng)
+    bearing = calculate_bearing(base_lat, base_lng, rover_lat, rover_lng)
+    direction = get_compass_direction(bearing)
+    
+    return jsonify({
+        "distance_meters": distance,
+        "bearing_degrees": bearing,
+        "compass_direction": direction,
+        "rover_location": {
+            "lat": rover_lat,
+            "lng": rover_lng,
+            "formatted": format_coordinates(rover_lat, rover_lng)
+        },
+        "base_location": {
+            "lat": base_lat,
+            "lng": base_lng,
+            "formatted": format_coordinates(base_lat, base_lng)
+        }
+    })
+
+
+# ===========================================================================
+#  MAIN ENTRY POINT
+# ===========================================================================
+
+def main():
+    """Application entry point."""
+    print()
+    print("=" * 60)
+    print("  AERO SENTINEL - BASE STATION MONITOR")
+    print("  Starting up...")
+    print("=" * 60)
+    print()
+
+    # Load configuration
+    load_config()
+    
+    # Initialize the database
+    initialize_database()
+    ensure_report_directory()
+
+    # Load waypoints
+    global waypoints
+    waypoints = load_waypoints()
+
+    # Cleanup old data
+    cleanup_old_data()
+
+    # Start serial listener
+    serial_thread = threading.Thread(
+        target=serial_listener_thread,
+        name="SerialListener",
+        daemon=True,
+    )
+    serial_thread.start()
+    logger.info("Serial listener thread started.")
+
+    # Start Flask
+    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
+    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
+    
+    app.run(
+        host=FLASK_HOST,
+        port=FLASK_PORT,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
