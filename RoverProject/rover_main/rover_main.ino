@@ -661,7 +661,7 @@ void sendSMS(const String& message) {
 // ESP-NOW COMMUNICATION
 // ============================================================================
 
-void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
+void onEspNowRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
   if (len == sizeof(CommandPacket)) {
     CommandPacket cmd;
     memcpy(&cmd, data, sizeof(cmd));
@@ -670,7 +670,7 @@ void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
   }
 }
 
-void onEspNowSent(const uint8_t *mac, esp_now_send_status_t status) {
+void onEspNowSent(const wifi_pkt_tx_info_t *tx_info, esp_now_send_status_t status) {
   // Could add retry logic here
 }
 
@@ -1079,7 +1079,12 @@ void setup() {
   SerialGPS.begin(9600);
   
   // Initialize watchdog timer
-  esp_task_wdt_init(WDT_TIMEOUT, true);
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT * 1000,
+    .idle_core_mask = 0,
+    .trigger_panic = true
+  };
+  esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);
   
   // Load configuration from EEPROM
