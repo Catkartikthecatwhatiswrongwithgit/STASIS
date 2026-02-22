@@ -284,7 +284,8 @@ void commandCompleted(bool success) {
 // ESP-NOW CALLBACKS
 // ============================================================================
 
-void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
+// ESP-NOW callbacks (ESP32 Arduino Core 3.x API)
+void onDataRecv(const esp_now_recv_info *info, const uint8_t *data, int len) {
   if (len != sizeof(RoverPacket)) return;
   
   memcpy(&incomingData, data, sizeof(incomingData));
@@ -314,7 +315,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
   Serial1.println();
 }
 
-void onDataSent(const uint8_t *mac, esp_now_send_status_t status) {
+void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
   lastSendOk = (status == ESP_NOW_SEND_SUCCESS);
   
   if (lastSendOk) {
@@ -536,3 +537,4 @@ void loop() {
   // Small delay to prevent tight loop
   delay(10);
 }
+
