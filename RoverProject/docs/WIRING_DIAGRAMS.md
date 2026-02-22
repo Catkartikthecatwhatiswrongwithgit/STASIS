@@ -44,6 +44,7 @@ This document provides comprehensive wiring diagrams for all components of the S
 │  │  GPIO 19 ────► GPS RX (SoftwareSerial TX)                            │  │
 │  │  GPIO 21 ────► DS18B20 Data (with 4.7k pull-up)                      │  │
 │  │  GPIO 42 ◄──── MPU6050 SDA (I2C Data)                                │  │
+│  │  GPIO 45 ────► Status LED                                             │  │
 │  │  GPIO 48 ────► Buzzer (+)                                             │  │
 │  │                                                                       │  │
 │  │  3.3V   ────► MPU6050 VCC, GPS VCC (if 3.3V compatible)              │  │
@@ -579,6 +580,7 @@ The LCD display is connected to the ESP32-C3, NOT the RPi Zero directly. The C3 
 | 19 | Serial TX | GPS RX |
 | 21 | OneWire | DS18B20 |
 | 42 | I2C SDA | MPU6050 |
+| 45 | Digital | Status LED |
 | 48 | Digital | Buzzer |
 
 ### Base Station Pin Summary
@@ -600,6 +602,6 @@ The LCD display is connected to the ESP32-C3, NOT the RPi Zero directly. The C3 
 
 ---
 
-*Document Version: 2.0*  
+*Document Version: 2.1*  
 *Last Updated: February 2026*  
-*Updated for C3 as GPIO Extender with LCD Display Control*
+*Updated with Status LED GPIO 45 addition*

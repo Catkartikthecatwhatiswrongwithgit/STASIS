@@ -4,15 +4,10 @@
 
 The ESP32-CAM handles all vision-related tasks for the rover:
 - Image capture and processing
-- Fire detection (multi-algorithm color and pattern analysis)
-- Motion detection (frame differencing with adaptive threshold)
-- Human detection (skin-tone and shape analysis)
-- Smoke detection (haze and color analysis)
-- Animal detection (shape and movement patterns)
-- Night vision mode with IR LED control
+- Fire detection (color + brightness analysis)
+- Motion detection (frame differencing)
+- Human detection (skin-tone pattern analysis)
 - Frame streaming on demand
-- Configurable detection zones
-- Multiple detection sensitivity levels
 
 ---
 
@@ -217,24 +212,32 @@ The camera ribbon cable must be inserted correctly:
 | 5V | 5V (Buck Converter) | Power |
 | GND | GND | Common Ground |
 
-### ESP32-CAM Camera Pins (Internal)
+### ESP32-CAM Camera Pins (Internal - AI Thinker)
 
 | Pin | GPIO | Function |
 |-----|------|----------|
-| D0 | 5 | Camera Data Bit 0 |
-| D1 | 18 | Camera Data Bit 1 |
-| D2 | 19 | Camera Data Bit 2 |
-| D3 | 21 | Camera Data Bit 3 |
-| D4 | 36 | Camera Data Bit 4 |
-| D5 | 39 | Camera Data Bit 5 |
-| D6 | 34 | Camera Data Bit 6 |
-| D7 | 35 | Camera Data Bit 7 |
+| D0 | 5 | Camera Data Bit 0 (Y2) |
+| D1 | 18 | Camera Data Bit 1 (Y3) |
+| D2 | 19 | Camera Data Bit 2 (Y4) |
+| D3 | 21 | Camera Data Bit 3 (Y5) |
+| D4 | 36 | Camera Data Bit 4 (Y6) |
+| D5 | 39 | Camera Data Bit 5 (Y7) |
+| D6 | 34 | Camera Data Bit 6 (Y8) |
+| D7 | 35 | Camera Data Bit 7 (Y9) |
 | XCLK | 0 | Camera Clock |
 | PCLK | 22 | Pixel Clock |
 | VSYNC | 25 | Vertical Sync |
 | HREF | 23 | Horizontal Reference |
-| SDA | 26 | I2C Data |
-| SCL | 27 | I2C Clock |
+| SDA | 26 | I2C Data (SIOD) |
+| SCL | 27 | I2C Clock (SIOC) |
+| PWDN | 32 | Power Down |
+| RESET | -1 | Reset (not connected) |
+
+### Status LED
+
+| Pin | GPIO | Function |
+|-----|------|----------|
+| LED | 4 | Status LED (built-in) |
 
 ---
 
@@ -244,60 +247,23 @@ The camera ribbon cable must be inserted correctly:
 
 | Command | Code | Description |
 |---------|------|-------------|
-| CAPTURE | 0x01 | Take single image and return detection result |
-| STREAM_ON | 0x02 | Start continuous frame streaming |
-| STREAM_OFF | 0x03 | Stop streaming |
-| DETECT | 0x04 | Run detection and return result |
-| NIGHT_MODE | 0x05 | Toggle night vision mode |
-| SET_SENSITIVITY | 0x06 | Set detection sensitivity (0-100) |
-| SET_ZONES | 0x07 | Configure detection zones |
-| GET_STATUS | 0x08 | Return module status |
-| CALIBRATE | 0x09 | Run sensor calibration |
-| SET_RESOLUTION | 0x0A | Change camera resolution |
-| ENABLE_FLASH | 0x0B | Enable flash LED |
-| DISABLE_FLASH | 0x0C | Disable flash LED |
-| GET_TEMPERATURE | 0x0D | Get module temperature |
-| RESET_COUNTERS | 0x0E | Reset detection counters |
-| GET_FRAME | 0x0F | Get raw frame data |
-| SET_EXPOSURE | 0x10 | Set exposure level |
-| SET_GAIN | 0x11 | Set gain level |
-| SAVE_CONFIG | 0x12 | Save configuration to EEPROM |
-| LOAD_CONFIG | 0x13 | Load configuration from EEPROM |
-| FACTORY_RESET | 0x14 | Reset all settings to defaults |
+| `CMD_CAPTURE` | 0x01 | Take single image and return detection result |
+| `CMD_STREAM_ON` | 0x02 | Start continuous frame streaming |
+| `CMD_STREAM_OFF` | 0x03 | Stop streaming |
+| `CMD_DETECT` | 0x04 | Run detection and return result |
 
 ### Response Format
 
 The ESP32-CAM sends back a `DetectionResult` struct:
 
 ```cpp
-struct DetectionResult {
-  bool    fire;              // Fire detected
-  bool    motion;            // Motion detected
-  bool    human;             // Human detected
-  bool    smoke;             // Smoke detected
-  bool    animal;            // Animal detected
-  float   confidence;        // Overall detection confidence (0-100)
-  float   fireConfidence;    // Fire detection confidence
-  float   motionConfidence;  // Motion detection confidence
-  float   humanConfidence;   // Human detection confidence
-  float   smokeConfidence;   // Smoke detection confidence
-  int16_t fireCenterX;       // Fire center X coordinate
-  int16_t fireCenterY;       // Fire center Y coordinate
-  int16_t motionCenterX;     // Motion center X coordinate
-  int16_t motionCenterY;     // Motion center Y coordinate
-  int16_t humanCenterX;      // Human center X coordinate
-  int16_t humanCenterY;      // Human center Y coordinate
-  int16_t smokeCenterX;      // Smoke center X coordinate
-  int16_t smokeCenterY;      // Smoke center Y coordinate
-  char    description[32];   // Human-readable description
-  uint32_t frameCount;       // Frame counter
-  uint16_t processingTime;   // Processing time in ms
-  uint8_t  detectionFlags;   // Bit flags for detections
-  uint16_t firePixelCount;   // Fire pixel count
-  uint16_t motionPixelCount; // Motion pixel count
-  uint16_t humanPixelCount;  // Human pixel count
-  uint16_t smokePixelCount;  // Smoke pixel count
-};
+typedef struct __attribute__((packed)) {
+  bool  fire;        // Fire detected
+  bool  motion;      // Motion detected
+  bool  human;       // Human detected
+  float confidence;  // Detection confidence (0-100)
+  char  description[24];  // Human-readable description
+} DetectionResult;
 ```
 
 ### Text Responses
@@ -305,103 +271,59 @@ struct DetectionResult {
 - `HAZARD:FIRE` - Fire detected
 - `HAZARD:MOTION` - Motion detected
 - `HAZARD:HUMAN` - Human detected
-- `HAZARD:SMOKE` - Smoke detected
-- `HAZARD:ANIMAL` - Animal detected
 - `CLEAR` - No hazards detected
 - `CAM:READY` - Camera initialized successfully
 - `CAM:ERROR` - Camera initialization failed
-
-### JSON Response Format
-
-Each detection also outputs detailed JSON:
-
-```json
-{
-  "fire": 0,
-  "motion": 1,
-  "human": 0,
-  "smoke": 0,
-  "animal": 0,
-  "confidence": 45.2,
-  "fireX": -1,
-  "fireY": -1,
-  "motionX": 160,
-  "motionY": 120,
-  "humanX": -1,
-  "humanY": -1,
-  "frameCount": 1234,
-  "processTime": 15,
-  "pixels": {
-    "fire": 0,
-    "motion": 45,
-    "human": 0,
-    "smoke": 0
-  }
-}
-```
 
 ---
 
 ## Detection Features
 
 ### Fire Detection
-- Multi-algorithm approach using color and pattern analysis
-- RGB565 color space analysis for fire colors (high red, medium green, low blue)
-- Center point calculation for fire location
-- Confidence scoring based on pixel count
+- RGB565 color space analysis for fire colors
+- Thresholds:
+  - Red channel minimum: 25
+  - Green channel minimum: 10
+  - Blue channel maximum: 8
+- Minimum fire pixels to trigger: 15
 
 ### Motion Detection
 - Frame differencing with adaptive threshold
 - Previous frame comparison for movement detection
-- Configurable sensitivity levels (0-100)
-- Motion center point tracking
+- Motion sensitivity threshold: 4000 (pixel difference)
+- Minimum motion pixels to trigger: 30
 
 ### Human Detection
 - Skin-tone color analysis in RGB565 space
 - Simplified pattern recognition
 - Higher threshold to reduce false positives
 
-### Smoke Detection
-- Gray-scale analysis for haze detection
-- Brightness variance calculation
-- Combined with fire detection for enhanced alerts
-
-### Animal Detection
-- Movement pattern analysis
-- Differentiated from human detection
-- Combined with motion detection
-
 ---
 
-## Detection Zones
-
-The firmware supports up to 8 configurable detection zones:
+## Detection Thresholds (Configurable)
 
 ```cpp
-struct DetectionZone {
-  uint16_t x1, y1;  // Top-left corner
-  uint16_t x2, y2;  // Bottom-right corner
-  bool     enabled;
-  uint8_t  sensitivity;  // 0-100
-  uint8_t  detectionMask; // Bit flags for which detections to run
-  char     name[16];
-};
+#define FIRE_PIXEL_THRESHOLD    15    // Minimum fire pixels to trigger
+#define MOTION_PIXEL_THRESHOLD  30    // Minimum motion pixels to trigger
+#define MOTION_SENSITIVITY      4000  // Pixel difference threshold
+#define FIRE_R_MIN              25    // Red channel minimum for fire
+#define FIRE_G_MIN              10    // Green channel minimum for fire
+#define FIRE_B_MAX              8     // Blue channel maximum for fire
 ```
-
-Use command `0x07` (SET_ZONES) to configure zones via serial.
 
 ---
 
-## Night Vision Mode
+## Camera Configuration
 
-The firmware includes a night vision mode:
+The camera is configured for optimal detection performance:
 
-- Increased brightness setting
-- Higher gain levels
-- Extended exposure time
-- Optional IR LED control (if connected)
-
-Toggle with command `0x05` (NIGHT_MODE).
+| Setting | Value | Description |
+|---------|-------|-------------|
+| Pixel Format | RGB565 | Efficient for color analysis |
+| Frame Size | QVGA (320x240) | Faster processing |
+| JPEG Quality | 12 | Compression quality |
+| Frame Buffer Count | 2 | Double buffer for streaming |
+| XCLK Frequency | 20MHz | Camera clock speed |
 
 ---
 
@@ -417,15 +339,15 @@ Toggle with command `0x05` (NIGHT_MODE).
 
 Send these bytes via Serial Monitor (set to "HEX" mode):
 - Send `01` (CAPTURE) - should return detection result
-- Send `02` (STREAM_ON) - should return `STREAM:ON`
-- Send `03` (STREAM_OFF) - should return `STREAM:OFF`
-- Send `08` (GET_STATUS) - should return JSON status
+- Send `02` (STREAM_ON) - should start streaming
+- Send `03` (STREAM_OFF) - should stop streaming
+- Send `04` (DETECT) - should return detection result
 
 ### LED Indicators
 
 | LED State | Meaning |
 |-----------|---------|
-| 3 blinks at startup | Camera initializing |
+| Blinks at startup | Camera initializing |
 | Solid on briefly | Camera ready |
 | Continuous fast blink | Camera error |
 | Brief flash | Image captured |
@@ -458,21 +380,20 @@ Send these bytes via Serial Monitor (set to "HEX" mode):
 1. Clean the camera lens
 2. Adjust lighting conditions
 3. The OV2640 struggles in low light
-4. Try night mode for low-light conditions
+4. Ensure adequate lighting for detection
 
 ### Detection Not Working
 
 1. Ensure adequate lighting
 2. Fire detection needs bright orange/red colors
 3. Motion detection needs contrast in scene
-4. Adjust sensitivity with SET_SENSITIVITY command
+4. Adjust thresholds in firmware if needed
 
-### High Temperature Warning
+### Brownout During Operation
 
-If you see `WARN:HIGH_TEMP`:
-1. Ensure adequate ventilation
-2. Reduce streaming frequency
-3. Disable flash LED if not needed
+1. Ensure stable 5V power supply
+2. Add decoupling capacitor
+3. Check current capacity of power source
 
 ---
 
@@ -511,13 +432,12 @@ Download from: https://www.espressif.com/en/support/download/other-tools
 ## Next Steps
 
 After flashing the ESP32-CAM:
-1. Connect to ESP32-S3 via UART
+1. Connect to ESP32-S3 via UART (GPIO 17/18)
 2. Flash the [ESP32-S3 rover](./ESP32-S3_INSTRUCTIONS.md)
 3. Test camera commands from the rover
 4. Review the complete [wiring diagram](./WIRING_DIAGRAMS.md)
 
 ---
 
-*Document Version: 2.0*  
-*Last Updated: February 2026*  
-*Updated for expanded firmware with smoke/animal detection, night mode, and detection zones*
+*Document Version: 2.1*  
+*Last Updated: February 2026*
