@@ -1,371 +1,267 @@
-# Stasis - Autonomous Environmental Monitoring Rover
+# STASIS - Autonomous Environmental Monitoring Rover
 
-A complete system for autonomous forest/environmental monitoring with hazard detection and base station reporting.
+A production-ready autonomous rover system for environmental monitoring, hazard detection, and autonomous docking. Built with ESP32-S3, Raspberry Pi Zero, and modular sensor integration.
 
-## System Overview
+---
+
+## System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Stasis SYSTEM                                        │
+│                           STASIS ROVER SYSTEM                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│    ROVER UNIT                          BASE STATION                          │
-│    ┌──────────────────┐               ┌──────────────────┐                  │
-│    │                  │               │                  │                  │
-│    │  ┌────────────┐  │    ESP-NOW    │  ┌────────────┐  │                  │
-│    │  │ ESP32-S3   │  │   ◄───────►   │  │ ESP32-C3   │  │                  │
-│    │  │ (Main)     │  │    Wireless   │  │ (Bridge)   │  │                  │
-│    │  └────────────┘  │               │  └─────┬──────┘  │                  │
-│    │                  │               │        │ UART    │                  │
-│    │  ┌────────────┐  │               │        ▼         │                  │
-│    │  │ ESP32-CAM  │  │               │  ┌────────────┐  │                  │
-│    │  │ (Vision)   │  │               │  │ RPi Zero   │  │                  │
-│    │  └────────────┘  │               │  │ (Monitor)  │  │                  │
-│    │                  │               │  └────────────┘  │                  │
-│    │  Sensors:        │               │                  │                  │
-│    │  - GPS           │               │  Outputs:        │                  │
-│    │  - IMU           │               │  - REST API      │                  │
-│    │  - Temp          │               │  - PDF Reports   │                  │
-│    │  - Ultrasonic    │               │  - LCD Display   │                  │
-│    │  - GSM/SMS       │               │                  │                  │
-│    │                  │               │                  │                  │
-│    └──────────────────┘               └──────────────────┘                  │
-│                                                                              │
+│                                                                             │
+│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                 │
+│   │   ROVER     │    │    BASE      │    │   REMOTE    │                 │
+│   │   (Mobile)  │◄──►│  (Station)   │◄──►│  (Dashboard)│                 │
+│   └──────┬───────┘    └──────┬───────┘    └──────────────┘                 │
+│          │                   │                                             │
+│          │    ┌──────────────┴───────┐                                   │
+│          │    │   COMMUNICATION      │                                   │
+│          │    │   • ESP-NOW          │                                   │
+│          │    │   • UART (Pi↔ESP32)  │                                   │
+│          │    │   • WiFi (Dashboard) │                                   │
+│          │    └───────────────────────┘                                   │
+│          │                                                                   │
+│   ┌──────┴────────────────────────────────────────────────────────┐       │
+│   │                     ROVER HARDWARE                             │       │
+│   ├───────────────────────────────────────────────────────────────┤       │
+│   │  ESP32-S3 (Main Controller)                                   │       │
+│   │    ├── Navigation & State Machine                            │       │
+│   │    ├── Motor Control (L9110S)                                │       │
+│   │    ├── Sensor Fusion                                         │       │
+│   │    └── Communication Bridge                                  │       │
+│   │                                                               │       │
+│   │  ESP32-CAM (Vision)                                          │       │
+│   │    ├── Fire Detection                                         │       │
+│   │    ├── Human Detection                                        │       │
+│   │    └── Tree Detection                                         │       │
+│   │                                                               │       │
+│   │  Sensors                                                     │       │
+│   │    ├── DS18B20 (Temperature)                                 │       │
+│   │    ├── HC-SR04 (Ultrasonic)                                  │       │
+│   │    ├── MPU6050 (Tilt/Seismic)                               │       │
+│   │    └── Neo-6M (GPS)                                          │       │
+│   │                                                               │       │
+│   │  Communication                                                │       │
+│   │    ├── SIM800 (SMS Alerts)                                   │       │
+│   │    └── ESP-NOW (Base Link)                                   │       │
+│   └───────────────────────────────────────────────────────────────┘       │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Quick Start Guide
-
-### Step 1: Flash the Firmware
-
-Follow these instruction documents in order:
-
-1. **ESP32-CAM** (Vision Module): [ESP32-CAM_INSTRUCTIONS.md](./ESP32-CAM_INSTRUCTIONS.md)
-2. **ESP32-C3** (Base Station Bridge): [ESP32-C3_INSTRUCTIONS.md](./ESP32-C3_INSTRUCTIONS.md)
-3. **ESP32-S3** (Rover Main): [ESP32-S3_INSTRUCTIONS.md](./ESP32-S3_INSTRUCTIONS.md)
-4. **Raspberry Pi Zero** (Base Station): [RPI0_INSTRUCTIONS.md](./RPI0_INSTRUCTIONS.md)
-
-### Step 2: Wire the Hardware
-
-See complete wiring diagrams: [WIRING_DIAGRAMS.md](./WIRING_DIAGRAMS.md)
-
-### Step 3: 3D Print Parts
-
-See 3D printing guide: [3D_PRINTED_PARTS.md](./3D_PRINTED_PARTS.md)
-
-### Step 4: Configure MAC Addresses
-
-1. Flash ESP32-C3 first and note its MAC address
-2. Update `baseMac[]` in `rover_main.ino` with ESP32-C3's MAC
-3. Re-flash ESP32-S3 with the correct MAC address
-
-### Step 5: Test the System
-
-1. Power on the base station (RPi Zero + ESP32-C3)
-2. Power on the rover
-3. Connect to WiFi AP: `AeroSentinel-Base` (password: `sentinel123`)
-4. Open `http://192.168.4.1` to check ESP32-C3 status
-5. Open `http://Stasis-base.local:5000/api/status` for rover data
-
 ---
 
-## Documentation Index
+## Hardware List
 
-| Document | Description |
-|----------|-------------|
-| [ESP32-S3_INSTRUCTIONS.md](./ESP32-S3_INSTRUCTIONS.md) | Flashing instructions for rover main controller |
-| [ESP32-C3_INSTRUCTIONS.md](./ESP32-C3_INSTRUCTIONS.md) | Flashing instructions for base station bridge |
-| [ESP32-CAM_INSTRUCTIONS.md](./ESP32-CAM_INSTRUCTIONS.md) | Flashing instructions for vision module |
-| [RPI0_INSTRUCTIONS.md](./RPI0_INSTRUCTIONS.md) | Raspberry Pi Zero auto-boot setup |
-| [WIRING_DIAGRAMS.md](./WIRING_DIAGRAMS.md) | Complete wiring diagrams and pinouts |
-| [APRILTAG_DOCKING_GUIDE.md](./APRILTAG_DOCKING_GUIDE.md) | Autonomous docking with AprilTag |
-| [3D_PRINTED_PARTS.md](./3D_PRINTED_PARTS.md) | 3D printed chassis and parts guide |
-
----
-
-## Hardware Requirements
-
-### Rover Unit
-
-| Component | Quantity | Notes |
-|-----------|----------|-------|
-| ESP32-S3 DevKit | 1 | Main controller |
-| ESP32-CAM | 1 | Vision module with OV2640 |
-| L9110S Motor Driver | 1 | 2-channel H-bridge |
-| DC Motors | 4 | 6V-12V, with wheels |
-| Neo-6M GPS | 1 | With antenna |
-| MPU6050 | 1 | IMU sensor |
-| DS18B20 | 1 | Temperature sensor |
-| HC-SR04 | 1 | Ultrasonic sensor |
-| SIM800L | 1 | GSM module |
-| Active Buzzer | 1 | 5V |
-| Status LED | 1 | GPIO 45 |
-| LiPo Battery | 1 | 3S (11.1V-12.6V) |
-| Buck Converter | 1 | 12V to 5V, 5A+ |
+### Rover
+| Component | Model | Purpose |
+|-----------|-------|---------|
+| Main MCU | ESP32-S3 | Navigation, state machine, motor control |
+| Camera | ESP32-CAM | Fire/human/tree detection |
+| Motor Driver | L9110S | 4WD differential drive |
+| Temperature | DS18B20 | Environmental monitoring |
+| Ultrasonic | HC-SR04 | Obstacle avoidance |
+| IMU | MPU6050 | Tilt/seismic detection |
+| GPS | Neo-6M | Location tracking |
+| Modem | SIM800 | SMS alerts |
+| Battery | LiPo 3S | Power |
 
 ### Base Station
-
-| Component | Quantity | Notes |
-|-----------|----------|-------|
-| Raspberry Pi Zero | 1 | Any version |
-| ESP32-C3 DevKit | 1 | Communication bridge |
-| MicroSD Card | 1 | 16GB+ |
-| 5V Power Supply | 1 | 2.5A+ |
-| LCD 16x2 I2C | 1 | Optional |
-
----
-
-## Software Architecture
-
-### Rover State Machine
-
-```
-┌─────────┐     Hazard Detected     ┌─────────┐
-│ PATROL  │ ───────────────────────►│  ALERT  │
-│         │                         │         │
-│         │◄────────────────────────┤         │
-└────┬────┘    After 3 seconds      └────┬────┘
-     │                                    │
-     │ Battery < 30%                      │
-     │                                    │
-     ▼                                    ▼
-┌─────────────┐                    ┌──────────┐
-│ RETURN_BASE │                    │ RESEARCH │
-│             │                    │          │
-│             │                    │          │
-└──────┬──────┘                    └────┬─────┘
-       │                                │
-       │ Arrived at base                │
-       │                                │
-       ▼                                │
-┌─────────┐                              │
-│ DOCKED  │◄─────────────────────────────┘
-│         │
-│ Charging│
-└─────────┘
-
-Additional States:
-┌───────────┐     Critical Situation     ┌─────────┐
-│ EMERGENCY │ ◄───────────────────────── │  Any    │
-│           │                            │  State  │
-└───────────┘
-
-┌─────────┐     Night Mode (10PM-6AM)    ┌─────────┐
-│  SLEEP  │ ◄─────────────────────────   │ PATROL  │
-│         │                              │         │
-└─────────┘                              └─────────┘
-```
-
-### Communication Flow
-
-```
-┌──────────────┐                    ┌──────────────┐
-│   ESP32-S3   │                    │   ESP32-C3   │
-│   (Rover)    │                    │   (Bridge)   │
-├──────────────┤                    ├──────────────┤
-│              │    ESP-NOW         │              │
-│ Telemetry ───┼───────────────────►│ JSON via UART│
-│              │    (Binary)        │      │       │
-│              │                    │      ▼       │
-│              │    ESP-NOW         │   Serial1    │
-│ Commands ◄───┼────────────────────│              │
-│              │    (Text)          │              │
-└──────────────┘                    └──────────────┘
-                                           │
-                                           ▼
-                                    ┌──────────────┐
-                                    │  RPi Zero    │
-                                    │  (Monitor)   │
-                                    ├──────────────┤
-                                    │              │
-                                    │ Flask API    │
-                                    │ SQLite DB    │
-                                    │ PDF Reports  │
-                                    │              │
-                                    └──────────────┘
-```
+| Component | Model | Purpose |
+|-----------|-------|---------|
+| Processing | Raspberry Pi Zero | AprilTag detection |
+| Bridge | ESP32-C3 | UART↔ESP-NOW |
+| Vision | USB Camera | AprilTag detection |
+| Display | I2C LCD | Status display |
+| Tag | AprilTag 36h11 | Docking beacon |
 
 ---
 
-## Features
+## State Machine
 
-### Navigation
-- GPS-based waypoint navigation
-- Path recording and playback (up to 100 points)
-- Obstacle avoidance with ultrasonic sensor
-- Compass heading from MPU6050
+```
+                    ┌──────────────────────────────────────┐
+                    │                                      │
+                    ▼                                      │
+    ┌───────────────────────────┐                          │
+    │         PATROL            │◄─────────────────────────┤
+    │  (Normal operation)       │                          │
+    └─────────────┬─────────────┘                          │
+                  │                                         │
+    ┌─────────────┴─────────────┐     ┌───────────────────┐ │
+    │                           │     │                   │ │
+    ▼                           ▼     ▼                   ▼ │
+┌────────────┐  ┌──────────────────┐  ┌────────────────┐    │
+│  RESEARCH  │  │ RETURN_TO_BASE  │  │     DOCKING    │    │
+│(Data collect)│ │ (Low battery)   │  │ (AprilTag)    │    │
+└──────┬──────┘  └────────┬─────────┘  └───────┬────────┘    │
+       │                 │                      │             │
+       │    ┌────────────┴──────────┐           │             │
+       │    │                      │           │             │
+       ▼    ▼                      ▼           ▼             │
+┌──────────────────────────────────────────────────────────┐ │
+│                        ALERT                              │ │
+│  (Fire/Earthquake/Intruder - Investigate & Alert)       │ │
+└──────────────────────────────────────────────────────────┘ │
+                              │                              │
+                              │     ┌───────────────────────┘
+                              │     │
+                              ▼     ▼
+                    ┌──────────────────┐
+                    │     DOCKED       │
+                    │ (Charging/Idle)  │
+                    └──────────────────┘
+```
 
-### Detection Capabilities
-- **Fire Detection**: Color analysis via camera + temperature threshold
-- **Motion Detection**: Frame differencing algorithm
-- **Human Detection**: Skin-tone pattern recognition
-- **Earthquake Detection**: MPU6050 acceleration monitoring (>15 m/s²)
+### State Transitions
 
-### Communication
-- ESP-NOW wireless to base station (500m+ range)
-- GSM/SMS alerts for critical events
-- WiFi streaming when near base
-
-### Power Management
-- Battery monitoring via ADC
-- Automatic return-to-base at 30% battery
-- Night mode for power conservation (10PM-6AM)
-- Watchdog timer for system recovery
-
-### Autonomous Docking
-- AprilTag visual docking system
-- Automatic alignment and approach
-- Charging status monitoring
+| From State | To State | Trigger Condition |
+|------------|----------|-------------------|
+| PATROL | RESEARCH | Timer or command |
+| PATROL | ALERT | fireDetected OR humanDetected OR tiltDetected |
+| PATROL | RETURN_TO_BASE | batteryPercent < 30% |
+| PATROL | DOCKING | dockingEnabled = true |
+| RESEARCH | PATROL | Timeout (5 min) |
+| RESEARCH | ALERT | Hazard detected |
+| ALERT | PATROL | Timeout or resolved |
+| RETURN_TO_BASE | DOCKING | dockingEnabled = true |
+| DOCKING | DOCKED | Successfully docked |
+| DOCKED | PATROL | dockingEnabled = false |
 
 ---
 
-## API Endpoints
+## Folder Structure
 
-The Raspberry Pi Zero serves a REST API on port 5000:
+```
+STASIS-Rover/
+├── .gitignore
+├── README.md
+├── LICENSE
+│
+├── rover_s3_firmware/          # ESP32-S3 main controller
+│   ├── platformio.ini
+│   ├── src/
+│   │   └── rover_main.cpp
+│   └── lib/
+│       └── (dependencies)
+│
+├── esp32_cam_firmware/         # ESP32-CAM vision
+│   ├── cam_firmware.ino
+│   └── libraries/
+│
+├── base_station_c3/            # ESP32-C3 bridge
+│   ├── platformio.ini
+│   └── src/
+│       └── bridge.cpp
+│
+├── pi_zero_station/            # Raspberry Pi Zero
+│   ├── requirements.txt
+│   ├── apriltag_docking.py    # AprilTag detection + control
+│   ├── station_monitor.py     # Main station logic
+│   └── config/
+│       └── camera_calibration.json
+│
+├── cad/                        # 3D printed parts
+│   └── (STL files)
+│
+└── docs/
+    ├── PROTOCOL.md            # Communication protocols
+    ├── HARDWARE.md           # Wiring diagrams
+    ├── CALIBRATION.md        # Sensor calibration
+    └── TROUBLESHOOTING.md    # Common issues
+```
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/status` | GET | Latest telemetry |
-| `/api/history` | GET | Last 200 entries |
-| `/api/stats` | GET | Daily statistics |
-| `/api/alerts` | GET | Alert history |
-| `/api/command` | POST | Send command to rover |
-| `/api/health` | GET | System health check |
-| `/api/config` | GET/POST | Configuration |
-| `/api/reports` | GET | List PDF reports |
-| `/api/export/csv` | GET | Export as CSV |
+---
 
-### Example Usage
+## Quick Start
+
+### 1. Hardware Assembly
+
+1. **Motor Driver**: Connect L9110S to ESP32-S3 GPIO pins (see `WIRING_DIAGRAMS.md`)
+2. **Sensors**: Wire DS18B20, HC-SR04, MPU6050 per pin definitions
+3. **GPS**: Connect Neo-6M to UART2
+4. **SIM800**: Connect to UART0 with level shifting
+
+### 2. Base Station Setup
 
 ```bash
-# Get latest status
-curl http://Stasis-base.local:5000/api/status
+# Install dependencies
+cd pi_zero_station
+pip install -r requirements.txt
 
-# Send command to rover
-curl -X POST http://Stasis-base.local:5000/api/command \
-  -H "Content-Type: application/json" \
-  -d '{"cmd": "FORWARD"}'
-
-# Get daily stats
-curl http://Stasis-base.local:5000/api/stats
+# Run AprilTag docking system
+python apriltag_docking.py --device /dev/ttyUSB0
 ```
 
----
+### 3. Rover Flash
 
-## Power Management
-
-### Rover Power States
-
-| State | Motor Speed | Sensor Rate | Notes |
-|-------|-------------|-------------|-------|
-| Normal | 100% | 500ms | Battery > 30% |
-| Power Saving | 50% | 1000ms | Battery < 30% |
-| Return Base | 50% | 500ms | Navigating to charger |
-| Docked | Off | 1000ms | Charging |
-| Sleep | Off | 5000ms | Night mode (10PM-6AM) |
-
-### Battery Monitoring
-
-- ADC reads battery voltage via voltage divider
-- Percentage calculated from 10.5V-12.6V range
-- Automatic return-to-base at 30%
-- Critical shutdown at 15%
-
----
-
-## Error Codes
-
-The rover tracks errors using a bitmask:
-
-| Error | Code | Description |
-|-------|------|-------------|
-| `ERR_GPS_LOST` | 0x0001 | GPS signal lost |
-| `ERR_MPU_FAIL` | 0x0002 | MPU6050 I2C failure |
-| `ERR_CAM_FAIL` | 0x0004 | ESP32-CAM communication failure |
-| `ERR_SIM_FAIL` | 0x0008 | SIM800 GSM module failure |
-| `ERR_LOW_BAT` | 0x0010 | Low battery warning |
-| `ERR_MOTOR_STALL` | 0x0020 | Motor stall detected |
-| `ERR_OBSTACLE` | 0x0040 | Obstacle detection issue |
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-| Problem | Solution |
-|---------|----------|
-| No telemetry received | Check ESP-NOW MAC addresses match |
-| Camera not working | Re-seat ribbon cable, contacts down |
-| GPS no fix | Wait 5 minutes, ensure sky view |
-| SIM800 not responding | Check power supply (2A peak) |
-| Motors not moving | Verify L9110S connections and power |
-| Serial communication fails | Check TX/RX not swapped |
-
-### LED Indicators
-
-**ESP32-C3 (Base Station Bridge):**
-- 1 blink: Data received from rover
-- 2 blinks: Command sent successfully
-- 3 blinks: Error in communication
-- 5 blinks: ESP-NOW reconnected
-- Long blink: ESP-NOW ready
-
-**ESP32-CAM:**
-- Blinks at startup: Camera initializing
-- Solid on briefly: Camera ready
-- Continuous fast blink: Camera error
-
-**ESP32-S3 (Rover):**
-- GPIO 45 LED: Status indication
-- Blinks on startup, activity indication
-
----
-
-## Project Structure
-
+```bash
+# Using PlatformIO
+cd rover_s3_firmware
+pio run --target upload
 ```
-RoverProject/
-├── rover_main/
-│   └── rover_main.ino        # ESP32-S3 firmware
-├── cam_firmware/
-│   └── cam_firmware.ino      # ESP32-CAM firmware
-├── base_bridge/
-│   └── base_bridge.ino       # ESP32-C3 firmware
-├── base_station/
-│   └── station_monitor.py    # RPi Zero Python script
-├── rover_dashboard/
-│   └── (Web dashboard files)
-├── .stl files/
-│   └── (3D printable parts)
-└── docs/
-    ├── README.md             # This file
-    ├── ESP32-S3_INSTRUCTIONS.md
-    ├── ESP32-C3_INSTRUCTIONS.md
-    ├── ESP32-CAM_INSTRUCTIONS.md
-    ├── RPI0_INSTRUCTIONS.md
-    ├── WIRING_DIAGRAMS.md
-    ├── APRILTAG_DOCKING_GUIDE.md
-    └── 3D_PRINTED_PARTS.md
-```
+
+### 4. Commissioning
+
+1. Verify all sensors respond
+2. Test motor direction
+3. Calibrate camera focal length
+4. Test AprilTag detection at various distances
+5. Verify ESP-NOW pairing
+
+---
+
+## Command Protocol
+
+### Pi Zero → ESP32-S3 (Docking)
+
+| Byte | Field | Range |
+|------|-------|-------|
+| 0 | HEADER | 0xAA |
+| 1 | turn | -100 to +100 |
+| 2 | speed | 0-100 |
+| 3 | docked | 0 or 1 |
+| 4 | checksum | XOR(1,2,3) |
+| 5 | TAIL | 0x55 |
+
+### ESP32-S3 → Base (Telemetry)
+
+See `docs/PROTOCOL.md` for full specification.
+
+---
+
+## Current Limitations
+
+- **GPS**: Neo-6M requires clear sky view; indoor operation limited
+- **AprilTag**: Requires adequate lighting; performance degrades in low-light
+- **WiFi**: Range limited to ~100m outdoors; use ESP-NOW for extended range
+- **Battery**: Actual runtime depends on terrain and load; 30% threshold is conservative
+
+---
+
+## Future Work
+
+- [ ] Implement SLAM for autonomous navigation
+- [ ] Add machine learning for hazard classification
+- [ ] Multi-rover coordination via ESP-NOW mesh
+- [ ] Solar charging integration
+- [ ] Web interface for real-time monitoring
 
 ---
 
 ## License
 
-This project is provided for educational and research purposes.
+MIT License - See LICENSE file
 
 ---
 
-## Support
+## Authors
 
-For issues and questions:
-1. Check the troubleshooting section above
-2. Review the individual instruction documents
-3. Verify all wiring connections
-4. Check serial monitor output for error messages
+- AeroSentinel Team
 
----
+## Acknowledgments
 
-*Document Version: 2.0*  
-*Last Updated: February 2026*
+- AprilTag library by University of Michigan
+- ESP32 Arduino framework
