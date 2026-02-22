@@ -481,7 +481,7 @@ void uartTask(void* parameter) {
     DockCommand cmd;
     
     while (true) {
-        int length = UART.read(UART_NUM, buffer, 1);
+        int length = uart_read_bytes(UART_NUM, buffer, 1, pdMS_TO_TICKS(10));
         if (length > 0) {
             if (parseDockCommand(buffer[0], &cmd)) {
                 // Valid command received
@@ -1090,7 +1090,7 @@ void uartTask(void* parameter) {
     DockCommand cmd;
     
     while (true) {
-        int length = UART.read(UART_NUM, buffer, 1);
+        int length = uart_read_bytes(UART_NUM, buffer, 1, pdMS_TO_TICKS(10));
         if (length > 0) {
             if (parseDockCommand(buffer[0], &cmd)) {
                 // Valid command received
@@ -1142,79 +1142,3 @@ void stateTask(void* parameter) {
 // =============================================================================
 // SETUP
 // =============================================================================
-
-void setup() {
-    Serial.begin(115200);
-    Serial.println("STASIS Rover Initializing...");
-    
-    // Configure motor pins
-    pinMode(MOTOR_A_PWM, OUTPUT);
-    pinMode(MOTOR_A_DIR, OUTPUT);
-    pinMode(MOTOR_B_PWM, OUTPUT);
-    pinMode(MOTOR_B_DIR, OUTPUT);
-    pinMode(MOTOR_C_PWM, OUTPUT);
-    pinMode(MOTOR_C_DIR, OUTPUT);
-    pinMode(MOTOR_D_PWM, OUTPUT);
-    pinMode(MOTOR_D_DIR, OUTPUT);
-    
-    // Configure PWM for motors
-    ledcSetup(0, 1000, 8);  // Channel 0, 1kHz, 8-bit
-    ledcAttachPin(MOTOR_A_PWM, 0);
-    ledcSetup(1, 1000, 8);
-    ledcAttachPin(MOTOR_B_PWM, 1);
-    ledcSetup(2, 1000, 8);
-    ledcAttachPin(MOTOR_C_PWM, 2);
-    ledcSetup(3, 1000, 8);
-    ledcAttachPin(MOTOR_D_PWM, 3);
-    
-    // Configure ultrasonic
-    pinMode(ULTRASONIC_TRIG, OUTPUT);
-    pinMode(ULTRASONIC_ECHO, INPUT);
-    
-    // Configure buzzer
-    pinMode(BUZZER_PIN, OUTPUT);
-    digitalWrite(BUZZER_PIN, LOW);
-    
-    // Configure UART for Pi Zero
-    uart_config_t uart_config = {
-        .baud_rate = UART_BAUD,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
-    };
-    uart_param_config(UART_NUM, &uart_config);
-    uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    uart_driver_install(UART_NUM, 1024, 1024, 0, NULL, 0);
-    
-    // Initialize watchdog
-    // In production: esp_task_wdt_init(5, true);
-    
-    // Create tasks
-    xTaskCreatePinnedToCore(uartTask, "UART", 2048, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(sensorTask, "Sensors", 2048, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(stateTask, "State", 2048, NULL, 1, NULL, 1);
-    
-    lastCommandTime = millis();
-    stateEntryTime = millis();
-    
-    Serial.println("STASIS Rover Ready");
-}
-
-// =============================================================================
-// MAIN LOOP
-// =============================================================================
-
-void loop() {
-    // Main loop - most work done in tasks
-    // Periodic safety check
-    if (estopTriggered) {
-        estop();
-    }
-    
-    // Watchdog reset
-    // esp_task_wdt_reset();
-    
-    delay(10);
-}
-

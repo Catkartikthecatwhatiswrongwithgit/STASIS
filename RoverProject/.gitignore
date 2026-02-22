@@ -212,3 +212,4 @@ Thumbs.db
 *.db
 *.sqlite
 
+"node_modules/"  
