@@ -1,8 +1,0 @@
-{
-  "appId": "com.aerosentinel.app",
-  "appName": "Aero Sentinel",
-  "webDir": "www",
-  "server": {
-    "androidScheme": "https"
-  }
-}
