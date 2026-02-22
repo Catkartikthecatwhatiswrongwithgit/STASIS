@@ -1,230 +1,102 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Dependencies
+node_modules/
 
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
+# Build outputs
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+build/
+*.o
+*.hex
+*.bin
+*.elf
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# IDEs
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# Environment
+.env
+.env.local
 
 # OS
 .DS_Store
 Thumbs.db
 
-# PlatformIO
-.pio/
-.pioenvs/
-.piolibdeps/
-.vscode/.browse.c_cpp_db*
-.vscode/c_cpp_properties.json
-.vscode/launch.json
-.vscode/ipch/
-
-# Arduino
-*.ino.hex
-
-# STL files (can be large)
-*.stl
-!RoverProject/.stl files/*.stl
-
 # Logs
 *.log
+npm-debug.log*
 
 # Database
 *.db
 *.sqlite
+*.sqlite3
 
-# Calibration files (may contain sensitive data)
-*calibration.json
-calibration/
-__pycache__/
-*.py[cod]
-*$py.class
+# Reports (generated)
+reports/*.pdf
+reports/*.txt
 
-# C extensions
-*.so
+# Android build
+RoverProject/rover_dashboard/android/app/build/
+RoverProject/rover_dashboard/android/.gradle/
+RoverProject/rover_dashboard/android/build/
+node_modules/
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
+# Build outputs
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+build/
+*.o
+*.hex
+*.bin
+*.elf
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# IDEs
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# Environment
+.env
+.env.local
 
 # OS
 .DS_Store
 Thumbs.db
 
-# PlatformIO
-.pio/
-.pioenvs/
-.piolibdeps/
-.vscode/.browse.c_cpp_db*
-.vscode/c_cpp_properties.json
-.vscode/launch.json
-.vscode/ipch/
-
-# Arduino
-*.ino.hex
-
-# STL files (can be large)
-*.stl
-!RoverProject/.stl files/*.stl
-
 # Logs
 *.log
+npm-debug.log*
 
 # Database
 *.db
 *.sqlite
+*.sqlite3
 
-# Calibration files (may contain sensitive data)
-*calibration.json
-calibration/
+# Reports (generated)
+reports/*.pdf
+reports/*.txt
+
+# Android build
+RoverProject/rover_dashboard/android/app/build/
+RoverProject/rover_dashboard/android/.gradle/
+RoverProject/rover_dashboard/android/build/
 
