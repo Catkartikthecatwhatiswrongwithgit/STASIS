@@ -49,6 +49,10 @@
 #define COMMAND_TIMEOUT_MS  500   // Stop if no command from Pi
 #define ESPNOW_TIMEOUT_MS   1000  // Stop if no ESP-NOW from base
 
+// PWM Configuration
+#define PWM_FREQ        1000  // 1kHz
+#define PWM_RESOLUTION  8     // 8-bit (0-255)
+
 // =============================================================================
 // COMMAND PROTOCOL STRUCTURES
 // =============================================================================
@@ -146,10 +150,10 @@ void setMotor(uint8_t pwmPin, uint8_t dirPin, int8_t speed) {
     
     if (speed >= 0) {
         digitalWrite(dirPin, HIGH);  // Forward
-        ledcWrite(0, map(speed, 0, 100, 0, 255));
+        ledcWrite(pwmPin, map(speed, 0, 100, 0, 255));
     } else {
         digitalWrite(dirPin, LOW);   // Reverse
-        ledcWrite(0, map(-speed, 0, 100, 0, 255));
+        ledcWrite(pwmPin, map(-speed, 0, 100, 0, 255));
     }
 }
 
@@ -548,15 +552,11 @@ void setup() {
     pinMode(MOTOR_D_PWM, OUTPUT);
     pinMode(MOTOR_D_DIR, OUTPUT);
     
-    // Configure PWM for motors
-    ledcSetup(0, 1000, 8);  // Channel 0, 1kHz, 8-bit
-    ledcAttachPin(MOTOR_A_PWM, 0);
-    ledcSetup(1, 1000, 8);
-    ledcAttachPin(MOTOR_B_PWM, 1);
-    ledcSetup(2, 1000, 8);
-    ledcAttachPin(MOTOR_C_PWM, 2);
-    ledcSetup(3, 1000, 8);
-    ledcAttachPin(MOTOR_D_PWM, 3);
+    // Configure PWM for motors (ESP32 Arduino Core 3.x API)
+    ledcAttach(MOTOR_A_PWM, PWM_FREQ, PWM_RESOLUTION);
+    ledcAttach(MOTOR_B_PWM, PWM_FREQ, PWM_RESOLUTION);
+    ledcAttach(MOTOR_C_PWM, PWM_FREQ, PWM_RESOLUTION);
+    ledcAttach(MOTOR_D_PWM, PWM_FREQ, PWM_RESOLUTION);
     
     // Configure ultrasonic
     pinMode(ULTRASONIC_TRIG, OUTPUT);
