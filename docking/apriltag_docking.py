@@ -9,7 +9,7 @@ Target: tag36h11 AprilTag, 200mm physical size
 Detection range: 0.2m to 4.0m
 Camera resolution: 320x240 (optimized for Pi Zero performance)
 
-Author: AeroSentinel
+Author: EdgeCase Team
 """
 
 import cv2
@@ -746,7 +746,7 @@ Target: tag36h11 AprilTag, 200mm physical size
 Detection range: 0.2m to 4.0m
 Camera resolution: 320x240 (optimized for Pi Zero performance)
 
-Author: AeroSentinel
+Author: EdgeCase Team
 """
 
 import cv2

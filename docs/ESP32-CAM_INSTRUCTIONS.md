@@ -136,7 +136,7 @@ ESP32-CAM          FTDI Programmer
 
 ### Step 3: Upload
 
-1. Open `RoverProject/cam_firmware/cam_firmware.ino`
+1. Open `cam_firmware/cam_firmware.ino`
 2. Click **Verify** to compile
 3. Click **Upload**
 4. Wait for "Done uploading"

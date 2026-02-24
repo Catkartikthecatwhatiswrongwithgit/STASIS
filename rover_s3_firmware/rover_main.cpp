@@ -8,7 +8,7 @@
  * 
  * Hardware: ESP32-S3, L9110S motors, DS18B20, HC-SR04, MPU6050, Neo-6M GPS
  * 
- * Author: AeroSentinel
+ * Author: EdgeCase Team
  */
 
 #include <Arduino.h>
@@ -177,7 +177,7 @@ void drive(int8_t turn, uint8_t speed) {
         leftSpeed = speed;
     } else {
         // Turn left - left motor slower
-        leftSpeed = speed + (int8_t)((speed * turn) / 100);  // turn is negative
+        leftSpeed = speed - (int8_t)((speed * (-turn)) / 100);  // turn is negative, negate for positive reduction
         rightSpeed = speed;
     }
     
@@ -617,7 +617,7 @@ void loop() {
  * 
  * Hardware: ESP32-S3, L9110S motors, DS18B20, HC-SR04, MPU6050, Neo-6M GPS
  * 
- * Author: AeroSentinel
+ * Author: EdgeCase Team
  */
 
 #include <Arduino.h>
@@ -786,7 +786,7 @@ void drive(int8_t turn, uint8_t speed) {
         leftSpeed = speed;
     } else {
         // Turn left - left motor slower
-        leftSpeed = speed + (int8_t)((speed * turn) / 100);  // turn is negative
+        leftSpeed = speed - (int8_t)((speed * (-turn)) / 100);  // turn is negative, negate for positive reduction
         rightSpeed = speed;
     }
     

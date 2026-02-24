@@ -42,8 +42,8 @@
 #define RETRY_DELAY_MS    100
 
 // WiFi AP Configuration
-const char* AP_SSID = "AeroSentinel-Base";
-const char* AP_PASSWORD = "sentinel123";
+const char* AP_SSID = "Stasis-Base";
+const char* AP_PASSWORD = "stasis123";
 
 // ============================================================================
 // DATA STRUCTURES (Must match rover_main.ino exactly)
@@ -140,7 +140,7 @@ void updateLED() {
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<title>Aero Sentinel - Base Station Status</title>";
+  html += "<title>Stasis - Base Station Status</title>";
   html += "<style>";
   html += "body{font-family:Arial,sans-serif;margin:20px;background:#1a1a2e;color:#eee;}";
   html += ".container{max-width:600px;margin:0 auto;}";
@@ -154,7 +154,7 @@ void handleRoot() {
   html += "meta{http-equiv:'refresh';content:'5';}";
   html += "</style></head><body>";
   html += "<div class='container'>";
-  html += "<h1>Aero Sentinel</h1>";
+  html += "<h1>Stasis</h1>";
   
   // Connection Status Card
   html += "<div class='card'>";
@@ -471,7 +471,7 @@ void setup() {
     // Print MAC address
     Serial.println("");
     Serial.println("========================================");
-    Serial.println("Aero Sentinel - Base Station Bridge");
+    Serial.println("Stasis - Base Station Bridge");
     Serial.println("========================================");
     Serial.print("MAC Address: ");
     Serial.println(WiFi.softAPmacAddress());

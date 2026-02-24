@@ -105,7 +105,7 @@ Download and install Arduino IDE from:
 
 ### Step 3: Upload
 
-1. Open `RoverProject/base_bridge/base_bridge.ino`
+1. Open `base_bridge/base_bridge.ino`
 2. Click **Verify** to compile
 3. Click **Upload**
 4. Wait for "Done uploading"
@@ -163,8 +163,8 @@ The ESP32-C3 creates a WiFi Access Point for status indication:
 
 | Setting | Value |
 |---------|-------|
-| SSID | `AeroSentinel-Base` |
-| Password | `sentinel123` |
+| SSID | `Stasis-Base` |
+| Password | `stasis123` |
 | IP Address | 192.168.4.1 |
 | Port | 80 |
 
@@ -335,10 +335,10 @@ The firmware implements a reliable message queue:
 2. You should see:
    ```
    ========================
-   AeroSentinel Base Station Bridge
+   Stasis Base Station Bridge
    ========================
    MAC: XX:XX:XX:XX:XX:XX
-   SSID: AeroSentinel-Base
+   SSID: Stasis-Base
    IP: 192.168.4.1
    Status page: http://192.168.4.1
    ========================
@@ -348,7 +348,7 @@ The firmware implements a reliable message queue:
 ### WiFi AP Test
 
 1. On your phone/laptop, scan for WiFi networks
-2. Connect to `AeroSentinel-Base` (password: `sentinel123`)
+2. Connect to `Stasis-Base` (password: `stasis123`)
 3. Open browser and go to `http://192.168.4.1`
 4. You should see the status page with ESP-NOW status
 

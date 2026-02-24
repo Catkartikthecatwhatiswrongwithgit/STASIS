@@ -259,7 +259,7 @@ MIT License - See LICENSE file
 
 ## Authors
 
-- AeroSentinel Team
+- EdgeCase Team
 
 ## Acknowledgments
 

@@ -1,0 +1,1788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stasis Sentinel - Forest Monitoring System</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <i class="fas fa-satellite-dish"></i>
+                <span>STASIS</span>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-view="dashboard">
+                    <i class="fas fa-tachometer-alt"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-view="map">
+                    <i class="fas fa-map-marked-alt"></i>
+                    <span>Map View</span>
+                </a>
+                <a href="#" class="nav-item" data-view="stream">
+                    <i class="fas fa-video"></i>
+                    <span>Live Stream</span>
+                </a>
+                <a href="#" class="nav-item" data-view="chat">
+                    <i class="fas fa-comments"></i>
+                    <span>Chat</span>
+                    <span class="badge" id="chatBadge">0</span>
+                </a>
+                <a href="#" class="nav-item" data-view="fencing">
+                    <i class="fas fa-draw-polygon"></i>
+                    <span>Area Fencing</span>
+                </a>
+                <a href="#" class="nav-item" data-view="team">
+                    <i class="fas fa-users"></i>
+                    <span>Team</span>
+                </a>
+                <a href="#" class="nav-item" data-view="settings">
+                    <i class="fas fa-cog"></i>
+                    <span>Settings</span>
+                </a>
+            </nav>
+            
+            <div class="user-panel">
+                <div class="user-info">
+                    <div class="user-avatar" id="userAvatar">
+                        <i class="fas fa-user"></i>
+                    </div>
+                    <div class="user-details">
+                        <span class="user-name" id="userName">Loading...</span>
+                        <span class="user-role" id="userRole">-</span>
+                    </div>
+                </div>
+                <button class="logout-btn" onclick="logout()">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <div class="header-left">
+                    <button class="menu-toggle" onclick="toggleSidebar()">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                    <h1 id="pageTitle">Dashboard</h1>
+                </div>
+                <div class="header-right">
+                    <div class="connection-status" id="connectionStatus">
+                        <span class="status-dot"></span>
+                        <span>Connected</span>
+                    </div>
+                    <div class="notifications">
+                        <button class="notif-btn" onclick="toggleNotifications()">
+                            <i class="fas fa-bell"></i>
+                            <span class="notif-badge" id="notifBadge">0</span>
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Dashboard View -->
+            <section class="view active" id="dashboardView">
+                <div class="dashboard-grid">
+                    <div class="card rover-status-card">
+                        <h3><i class="fas fa-robot"></i> Rover Status</h3>
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="label">State</span>
+                                <span class="value" id="roverState">PATROL</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Battery</span>
+                                <span class="value" id="roverBattery">--%</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Temperature</span>
+                                <span class="value" id="roverTemp">--°C</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Distance</span>
+                                <span class="value" id="roverDistance">-- cm</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card mini-map-card">
+                        <h3><i class="fas fa-map"></i> Location</h3>
+                        <div id="miniMap"></div>
+                    </div>
+
+                    <div class="card stream-preview-card">
+                        <h3><i class="fas fa-video"></i> Live Feed</h3>
+                        <div class="stream-container">
+                            <img id="streamPreview" src="" alt="No Stream">
+                            <div class="stream-overlay">
+                                <span class="stream-status" id="streamStatus">Offline</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card alerts-card">
+                        <h3><i class="fas fa-exclamation-triangle"></i> Recent Alerts</h3>
+                        <div class="alerts-list" id="alertsList">
+                            <div class="no-data">No alerts</div>
+                        </div>
+                    </div>
+
+                    <div class="card stats-card">
+                        <h3><i class="fas fa-chart-bar"></i> Today's Stats</h3>
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <span class="stat-value" id="packetsToday">0</span>
+                                <span class="stat-label">Packets</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-value" id="distanceCovered">0</span>
+                                <span class="stat-label">Meters</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-value" id="hazardsDetected">0</span>
+                                <span class="stat-label">Hazards</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card controls-card">
+                        <h3><i class="fas fa-gamepad"></i> Quick Controls</h3>
+                        <div class="control-buttons">
+                            <button class="ctrl-btn" onclick="sendCommand('STOP')" title="Emergency Stop">
+                                <i class="fas fa-stop"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('FORWARD')" title="Forward">
+                                <i class="fas fa-arrow-up"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('BACKWARD')" title="Backward">
+                                <i class="fas fa-arrow-down"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('LEFT')" title="Turn Left">
+                                <i class="fas fa-arrow-left"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('RIGHT')" title="Turn Right">
+                                <i class="fas fa-arrow-right"></i>
+                            </button>
+                            <button class="ctrl-btn return-btn" onclick="sendCommand('RETURN_BASE')" title="Return to Base">
+                                <i class="fas fa-home"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Map View -->
+            <section class="view" id="mapView">
+                <div class="map-container">
+                    <div id="mainMap"></div>
+                    <div class="map-controls">
+                        <button class="map-btn" onclick="centerOnRover()" title="Center on Rover">
+                            <i class="fas fa-crosshairs"></i>
+                        </button>
+                        <button class="map-btn" onclick="centerOnBase()" title="Center on Base">
+                            <i class="fas fa-home"></i>
+                        </button>
+                        <button class="map-btn" onclick="toggleFencingMode()" title="Draw Fence">
+                            <i class="fas fa-draw-polygon"></i>
+                        </button>
+                    </div>
+                    <div class="rover-info-panel">
+                        <h4>Rover Position</h4>
+                        <p><strong>Lat:</strong> <span id="roverLat">--</span></p>
+                        <p><strong>Lng:</strong> <span id="roverLng">--</span></p>
+                        <p><strong>Heading:</strong> <span id="roverHeading">--</span>°</p>
+                        <p><strong>Speed:</strong> <span id="roverSpeed">--</span></p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Live Stream View -->
+            <section class="view" id="streamView">
+                <div class="stream-view-container">
+                    <div class="main-stream">
+                        <img id="mainStream" src="" alt="No Stream Available">
+                        <div class="stream-controls">
+                            <button onclick="toggleFullscreen()"><i class="fas fa-expand"></i></button>
+                            <button onclick="takeSnapshot()"><i class="fas fa-camera"></i></button>
+                            <button onclick="toggleRecording()"><i class="fas fa-circle"></i></button>
+                        </div>
+                    </div>
+                    <div class="stream-info">
+                        <h3>Stream Information</h3>
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <span class="label">Status</span>
+                                <span class="value" id="streamInfoStatus">Offline</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">Resolution</span>
+                                <span class="value">320x240</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">FPS</span>
+                                <span class="value" id="streamFps">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Chat View -->
+            <section class="view" id="chatView">
+                <div class="chat-container">
+                    <div class="chat-sidebar">
+                        <h3>Channels</h3>
+                        <div class="channel-list">
+                            <div class="channel active" data-channel="general">
+                                <i class="fas fa-hashtag"></i>
+                                <span>general</span>
+                            </div>
+                            <div class="channel" data-channel="alerts">
+                                <i class="fas fa-exclamation-circle"></i>
+                                <span>alerts</span>
+                            </div>
+                            <div class="channel" data-channel="commands">
+                                <i class="fas fa-terminal"></i>
+                                <span>commands</span>
+                            </div>
+                        </div>
+                        <h3>Online Users</h3>
+                        <div class="online-users" id="onlineUsers"></div>
+                    </div>
+                    <div class="chat-main">
+                        <div class="chat-header">
+                            <span class="channel-name"># general</span>
+                            <span class="channel-desc">General discussion for forest officers</span>
+                        </div>
+                        <div class="messages-container" id="messagesContainer"></div>
+                        <div class="chat-input-container">
+                            <input type="text" id="chatInput" placeholder="Type a message..." onkeypress="handleChatKeypress(event)">
+                            <button onclick="sendMessage()"><i class="fas fa-paper-plane"></i></button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Fencing View -->
+            <section class="view" id="fencingView">
+                <div class="fencing-container">
+                    <div class="fencing-map"><div id="fencingMap"></div></div>
+                    <div class="fencing-panel">
+                        <h3><i class="fas fa-draw-polygon"></i> Patrol Area</h3>
+                        <div class="fencing-info">
+                            <p>Define the area where Stasis will patrol. Click on the map to add points.</p>
+                            <div class="current-fence">
+                                <h4>Current Fence</h4>
+                                <p><strong>Points:</strong> <span id="fencePoints">0</span></p>
+                                <p><strong>Area:</strong> <span id="fenceArea">0</span> m²</p>
+                            </div>
+                        </div>
+                        <div class="fencing-actions">
+                            <button class="btn primary" onclick="startFencing()"><i class="fas fa-pencil-alt"></i> Draw New Fence</button>
+                            <button class="btn secondary" onclick="clearFence()"><i class="fas fa-trash"></i> Clear Fence</button>
+                            <button class="btn success" onclick="saveFence()"><i class="fas fa-save"></i> Save Fence</button>
+                        </div>
+                        <div class="patrol-radius">
+                            <h4>Default Patrol Radius</h4>
+                            <p>If no fence is set, Stasis will patrol within this radius from base:</p>
+                            <div class="radius-slider">
+                                <input type="range" id="patrolRadius" min="50" max="1000" value="250" oninput="updateRadiusDisplay()">
+                                <span id="radiusValue">250m</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Team View -->
+            <section class="view" id="teamView">
+                <div class="team-container">
+                    <div class="team-section">
+                        <h3><i class="fas fa-crown"></i> Main Team Members - EdgeCase</h3>
+                        <div class="team-grid" id="mainTeamGrid">
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Kartik</span>
+                                    <span class="member-role">Leader & Initiative</span>
+                                </div>
+                                <span class="rank-badge admin">Admin</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Harish</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge moderator">Moderator</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Ryan Ahmed</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge moderator">Moderator</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Mohaideen Ijaz</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge officer">Officer</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Swethen</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge officer">Officer</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="team-section">
+                        <h3><i class="fas fa-hands-helping"></i> Supporters</h3>
+                        <div class="team-grid" id="supportersGrid">
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Stephen</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Krish</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Inba</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Baavasri</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Janane</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="team-section">
+                        <h3><i class="fas fa-shield-alt"></i> Role Permissions</h3>
+                        <div class="permissions-table">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Permission</th>
+                                        <th>Admin</th>
+                                        <th>Moderator</th>
+                                        <th>Officer</th>
+                                        <th>Supporter</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>Full Control</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Send Commands</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>View Live Stream</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Chat</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Set Patrol Area</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Manage Users</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Receive Daily Reports</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings View -->
+            <section class="view" id="settingsView">
+                <div class="settings-container">
+                    <div class="settings-section">
+                        <h3><i class="fas fa-server"></i> Connection Settings</h3>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label>Base Station IP</label>
+                                <input type="text" id="baseStationIP" value="192.168.4.1">
+                            </div>
+                            <div class="form-group">
+                                <label>API Port</label>
+                                <input type="number" id="apiPort" value="5000">
+                            </div>
+                            <div class="form-group">
+                                <label>Stream URL</label>
+                                <input type="text" id="streamUrl" placeholder="http://192.168.4.1:81/stream">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h3><i class="fas fa-bell"></i> Notification Settings</h3>
+                        <div class="settings-form">
+                            <div class="form-group checkbox">
+                                <input type="checkbox" id="enableAlerts" checked>
+                                <label for="enableAlerts">Enable Alert Notifications</label>
+                            </div>
+                            <div class="form-group checkbox">
+                                <input type="checkbox" id="enableSound" checked>
+                                <label for="enableSound">Sound Notifications</label>
+                            </div>
+                            <div class="form-group checkbox">
+                                <input type="checkbox" id="enableEmail" checked>
+                                <label for="enableEmail">Email Reports (Top 3 Ranks)</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h3><i class="fas fa-map-marker-alt"></i> Patrol Settings</h3>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label>Default Patrol Radius (meters)</label>
+                                <input type="number" id="defaultRadius" value="250" min="50" max="1000">
+                            </div>
+                            <div class="form-group">
+                                <label>Patrol Speed</label>
+                                <select id="patrolSpeed">
+                                    <option value="slow">Slow</option>
+                                    <option value="normal" selected>Normal</option>
+                                    <option value="fast">Fast</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Return Battery Threshold (%)</label>
+                                <input type="number" id="returnBattery" value="30" min="10" max="50">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-actions">
+                        <button class="btn primary" onclick="saveSettings()"><i class="fas fa-save"></i> Save Settings</button>
+                        <button class="btn secondary" onclick="resetSettings()"><i class="fas fa-undo"></i> Reset to Defaults</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Login Modal -->
+    <div class="modal" id="loginModal">
+        <div class="modal-content login-modal">
+            <div class="login-header">
+                <i class="fas fa-satellite-dish"></i>
+                <h2>STASIS SENTINEL</h2>
+                <p>Forest Monitoring System</p>
+            </div>
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="loginEmail" required placeholder="Enter your email">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="loginPassword" required placeholder="Enter your password">
+                </div>
+                <button type="submit" class="btn primary full-width"><i class="fas fa-sign-in-alt"></i> Login</button>
+            </form>
+            <div class="login-footer">
+                <p>Team EdgeCase © 2026</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Panel -->
+    <div class="notification-panel" id="notificationPanel">
+        <div class="notif-header">
+            <h4>Notifications</h4>
+            <button onclick="clearNotifications()">Clear All</button>
+        </div>
+        <div class="notif-list" id="notifList">
+            <div class="no-notifications">No notifications</div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stasis Sentinel - Forest Monitoring System</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <i class="fas fa-satellite-dish"></i>
+                <span>STASIS</span>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-view="dashboard">
+                    <i class="fas fa-tachometer-alt"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-view="map">
+                    <i class="fas fa-map-marked-alt"></i>
+                    <span>Map View</span>
+                </a>
+                <a href="#" class="nav-item" data-view="stream">
+                    <i class="fas fa-video"></i>
+                    <span>Live Stream</span>
+                </a>
+                <a href="#" class="nav-item" data-view="chat">
+                    <i class="fas fa-comments"></i>
+                    <span>Chat</span>
+                    <span class="badge" id="chatBadge">0</span>
+                </a>
+                <a href="#" class="nav-item" data-view="fencing">
+                    <i class="fas fa-draw-polygon"></i>
+                    <span>Area Fencing</span>
+                </a>
+                <a href="#" class="nav-item" data-view="team">
+                    <i class="fas fa-users"></i>
+                    <span>Team</span>
+                </a>
+                <a href="#" class="nav-item" data-view="settings">
+                    <i class="fas fa-cog"></i>
+                    <span>Settings</span>
+                </a>
+            </nav>
+            
+            <div class="user-panel">
+                <div class="user-info">
+                    <div class="user-avatar" id="userAvatar">
+                        <i class="fas fa-user"></i>
+                    </div>
+                    <div class="user-details">
+                        <span class="user-name" id="userName">Loading...</span>
+                        <span class="user-role" id="userRole">-</span>
+                    </div>
+                </div>
+                <button class="logout-btn" onclick="logout()">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <div class="header-left">
+                    <button class="menu-toggle" onclick="toggleSidebar()">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                    <h1 id="pageTitle">Dashboard</h1>
+                </div>
+                <div class="header-right">
+                    <div class="connection-status" id="connectionStatus">
+                        <span class="status-dot"></span>
+                        <span>Connected</span>
+                    </div>
+                    <div class="notifications">
+                        <button class="notif-btn" onclick="toggleNotifications()">
+                            <i class="fas fa-bell"></i>
+                            <span class="notif-badge" id="notifBadge">0</span>
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Dashboard View -->
+            <section class="view active" id="dashboardView">
+                <div class="dashboard-grid">
+                    <div class="card rover-status-card">
+                        <h3><i class="fas fa-robot"></i> Rover Status</h3>
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="label">State</span>
+                                <span class="value" id="roverState">PATROL</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Battery</span>
+                                <span class="value" id="roverBattery">--%</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Temperature</span>
+                                <span class="value" id="roverTemp">--°C</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Distance</span>
+                                <span class="value" id="roverDistance">-- cm</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card mini-map-card">
+                        <h3><i class="fas fa-map"></i> Location</h3>
+                        <div id="miniMap"></div>
+                    </div>
+
+                    <div class="card stream-preview-card">
+                        <h3><i class="fas fa-video"></i> Live Feed</h3>
+                        <div class="stream-container">
+                            <img id="streamPreview" src="" alt="No Stream">
+                            <div class="stream-overlay">
+                                <span class="stream-status" id="streamStatus">Offline</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card alerts-card">
+                        <h3><i class="fas fa-exclamation-triangle"></i> Recent Alerts</h3>
+                        <div class="alerts-list" id="alertsList">
+                            <div class="no-data">No alerts</div>
+                        </div>
+                    </div>
+
+                    <div class="card stats-card">
+                        <h3><i class="fas fa-chart-bar"></i> Today's Stats</h3>
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <span class="stat-value" id="packetsToday">0</span>
+                                <span class="stat-label">Packets</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-value" id="distanceCovered">0</span>
+                                <span class="stat-label">Meters</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-value" id="hazardsDetected">0</span>
+                                <span class="stat-label">Hazards</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card controls-card">
+                        <h3><i class="fas fa-gamepad"></i> Quick Controls</h3>
+                        <div class="control-buttons">
+                            <button class="ctrl-btn" onclick="sendCommand('STOP')" title="Emergency Stop">
+                                <i class="fas fa-stop"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('FORWARD')" title="Forward">
+                                <i class="fas fa-arrow-up"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('BACKWARD')" title="Backward">
+                                <i class="fas fa-arrow-down"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('LEFT')" title="Turn Left">
+                                <i class="fas fa-arrow-left"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('RIGHT')" title="Turn Right">
+                                <i class="fas fa-arrow-right"></i>
+                            </button>
+                            <button class="ctrl-btn return-btn" onclick="sendCommand('RETURN_BASE')" title="Return to Base">
+                                <i class="fas fa-home"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Map View -->
+            <section class="view" id="mapView">
+                <div class="map-container">
+                    <div id="mainMap"></div>
+                    <div class="map-controls">
+                        <button class="map-btn" onclick="centerOnRover()" title="Center on Rover">
+                            <i class="fas fa-crosshairs"></i>
+                        </button>
+                        <button class="map-btn" onclick="centerOnBase()" title="Center on Base">
+                            <i class="fas fa-home"></i>
+                        </button>
+                        <button class="map-btn" onclick="toggleFencingMode()" title="Draw Fence">
+                            <i class="fas fa-draw-polygon"></i>
+                        </button>
+                    </div>
+                    <div class="rover-info-panel">
+                        <h4>Rover Position</h4>
+                        <p><strong>Lat:</strong> <span id="roverLat">--</span></p>
+                        <p><strong>Lng:</strong> <span id="roverLng">--</span></p>
+                        <p><strong>Heading:</strong> <span id="roverHeading">--</span>°</p>
+                        <p><strong>Speed:</strong> <span id="roverSpeed">--</span></p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Live Stream View -->
+            <section class="view" id="streamView">
+                <div class="stream-view-container">
+                    <div class="main-stream">
+                        <img id="mainStream" src="" alt="No Stream Available">
+                        <div class="stream-controls">
+                            <button onclick="toggleFullscreen()"><i class="fas fa-expand"></i></button>
+                            <button onclick="takeSnapshot()"><i class="fas fa-camera"></i></button>
+                            <button onclick="toggleRecording()"><i class="fas fa-circle"></i></button>
+                        </div>
+                    </div>
+                    <div class="stream-info">
+                        <h3>Stream Information</h3>
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <span class="label">Status</span>
+                                <span class="value" id="streamInfoStatus">Offline</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">Resolution</span>
+                                <span class="value">320x240</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">FPS</span>
+                                <span class="value" id="streamFps">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Chat View -->
+            <section class="view" id="chatView">
+                <div class="chat-container">
+                    <div class="chat-sidebar">
+                        <h3>Channels</h3>
+                        <div class="channel-list">
+                            <div class="channel active" data-channel="general">
+                                <i class="fas fa-hashtag"></i>
+                                <span>general</span>
+                            </div>
+                            <div class="channel" data-channel="alerts">
+                                <i class="fas fa-exclamation-circle"></i>
+                                <span>alerts</span>
+                            </div>
+                            <div class="channel" data-channel="commands">
+                                <i class="fas fa-terminal"></i>
+                                <span>commands</span>
+                            </div>
+                        </div>
+                        <h3>Online Users</h3>
+                        <div class="online-users" id="onlineUsers"></div>
+                    </div>
+                    <div class="chat-main">
+                        <div class="chat-header">
+                            <span class="channel-name"># general</span>
+                            <span class="channel-desc">General discussion for forest officers</span>
+                        </div>
+                        <div class="messages-container" id="messagesContainer"></div>
+                        <div class="chat-input-container">
+                            <input type="text" id="chatInput" placeholder="Type a message..." onkeypress="handleChatKeypress(event)">
+                            <button onclick="sendMessage()"><i class="fas fa-paper-plane"></i></button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Fencing View -->
+            <section class="view" id="fencingView">
+                <div class="fencing-container">
+                    <div class="fencing-map"><div id="fencingMap"></div></div>
+                    <div class="fencing-panel">
+                        <h3><i class="fas fa-draw-polygon"></i> Patrol Area</h3>
+                        <div class="fencing-info">
+                            <p>Define the area where Stasis will patrol. Click on the map to add points.</p>
+                            <div class="current-fence">
+                                <h4>Current Fence</h4>
+                                <p><strong>Points:</strong> <span id="fencePoints">0</span></p>
+                                <p><strong>Area:</strong> <span id="fenceArea">0</span> m²</p>
+                            </div>
+                        </div>
+                        <div class="fencing-actions">
+                            <button class="btn primary" onclick="startFencing()"><i class="fas fa-pencil-alt"></i> Draw New Fence</button>
+                            <button class="btn secondary" onclick="clearFence()"><i class="fas fa-trash"></i> Clear Fence</button>
+                            <button class="btn success" onclick="saveFence()"><i class="fas fa-save"></i> Save Fence</button>
+                        </div>
+                        <div class="patrol-radius">
+                            <h4>Default Patrol Radius</h4>
+                            <p>If no fence is set, Stasis will patrol within this radius from base:</p>
+                            <div class="radius-slider">
+                                <input type="range" id="patrolRadius" min="50" max="1000" value="250" oninput="updateRadiusDisplay()">
+                                <span id="radiusValue">250m</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Team View -->
+            <section class="view" id="teamView">
+                <div class="team-container">
+                    <div class="team-section">
+                        <h3><i class="fas fa-crown"></i> Main Team Members - EdgeCase</h3>
+                        <div class="team-grid" id="mainTeamGrid">
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Kartik</span>
+                                    <span class="member-role">Leader & Initiative</span>
+                                </div>
+                                <span class="rank-badge admin">Admin</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Harish</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge moderator">Moderator</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Ryan Ahmed</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge moderator">Moderator</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Mohaideen Ijaz</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge officer">Officer</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Swethen</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge officer">Officer</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="team-section">
+                        <h3><i class="fas fa-hands-helping"></i> Supporters</h3>
+                        <div class="team-grid" id="supportersGrid">
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Stephen</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Krish</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Inba</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Baavasri</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Janane</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="team-section">
+                        <h3><i class="fas fa-shield-alt"></i> Role Permissions</h3>
+                        <div class="permissions-table">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Permission</th>
+                                        <th>Admin</th>
+                                        <th>Moderator</th>
+                                        <th>Officer</th>
+                                        <th>Supporter</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>Full Control</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Send Commands</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>View Live Stream</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Chat</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Set Patrol Area</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Manage Users</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Receive Daily Reports</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings View -->
+            <section class="view" id="settingsView">
+                <div class="settings-container">
+                    <div class="settings-section">
+                        <h3><i class="fas fa-server"></i> Connection Settings</h3>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label>Base Station IP</label>
+                                <input type="text" id="baseStationIP" value="192.168.4.1">
+                            </div>
+                            <div class="form-group">
+                                <label>API Port</label>
+                                <input type="number" id="apiPort" value="5000">
+                            </div>
+                            <div class="form-group">
+                                <label>Stream URL</label>
+                                <input type="text" id="streamUrl" placeholder="http://192.168.4.1:81/stream">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h3><i class="fas fa-bell"></i> Notification Settings</h3>
+                        <div class="settings-form">
+                            <div class="form-group checkbox">
+                                <input type="checkbox" id="enableAlerts" checked>
+                                <label for="enableAlerts">Enable Alert Notifications</label>
+                            </div>
+                            <div class="form-group checkbox">
+                                <input type="checkbox" id="enableSound" checked>
+                                <label for="enableSound">Sound Notifications</label>
+                            </div>
+                            <div class="form-group checkbox">
+                                <input type="checkbox" id="enableEmail" checked>
+                                <label for="enableEmail">Email Reports (Top 3 Ranks)</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h3><i class="fas fa-map-marker-alt"></i> Patrol Settings</h3>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label>Default Patrol Radius (meters)</label>
+                                <input type="number" id="defaultRadius" value="250" min="50" max="1000">
+                            </div>
+                            <div class="form-group">
+                                <label>Patrol Speed</label>
+                                <select id="patrolSpeed">
+                                    <option value="slow">Slow</option>
+                                    <option value="normal" selected>Normal</option>
+                                    <option value="fast">Fast</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Return Battery Threshold (%)</label>
+                                <input type="number" id="returnBattery" value="30" min="10" max="50">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-actions">
+                        <button class="btn primary" onclick="saveSettings()"><i class="fas fa-save"></i> Save Settings</button>
+                        <button class="btn secondary" onclick="resetSettings()"><i class="fas fa-undo"></i> Reset to Defaults</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Login Modal -->
+    <div class="modal" id="loginModal">
+        <div class="modal-content login-modal">
+            <div class="login-header">
+                <i class="fas fa-satellite-dish"></i>
+                <h2>STASIS SENTINEL</h2>
+                <p>Forest Monitoring System</p>
+            </div>
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="loginEmail" required placeholder="Enter your email">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="loginPassword" required placeholder="Enter your password">
+                </div>
+                <button type="submit" class="btn primary full-width"><i class="fas fa-sign-in-alt"></i> Login</button>
+            </form>
+            <div class="login-footer">
+                <p>Team EdgeCase © 2026</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Panel -->
+    <div class="notification-panel" id="notificationPanel">
+        <div class="notif-header">
+            <h4>Notifications</h4>
+            <button onclick="clearNotifications()">Clear All</button>
+        </div>
+        <div class="notif-list" id="notifList">
+            <div class="no-notifications">No notifications</div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
+
+                    <input type="email" id="loginEmail" required placeholder="Enter your email">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="loginPassword" required placeholder="Enter your password">
+                </div>
+                <button type="submit" class="btn primary full-width">
+                    <i class="fas fa-sign-in-alt"></i> Login
+                </button>
+            </form>
+            <div class="login-footer">
+                <p>Team EdgeCase © 2026</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Panel -->
+    <div class="notification-panel" id="notificationPanel">
+        <div class="notif-header">
+            <h4>Notifications</h4>
+            <button onclick="clearNotifications()">Clear All</button>
+        </div>
+        <div class="notif-list" id="notifList">
+            <div class="no-notifications">No notifications</div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stasis Sentinel - Forest Monitoring System</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <i class="fas fa-satellite-dish"></i>
+                <span>STASIS</span>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-view="dashboard">
+                    <i class="fas fa-tachometer-alt"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-view="map">
+                    <i class="fas fa-map-marked-alt"></i>
+                    <span>Map View</span>
+                </a>
+                <a href="#" class="nav-item" data-view="stream">
+                    <i class="fas fa-video"></i>
+                    <span>Live Stream</span>
+                </a>
+                <a href="#" class="nav-item" data-view="chat">
+                    <i class="fas fa-comments"></i>
+                    <span>Chat</span>
+                    <span class="badge" id="chatBadge">0</span>
+                </a>
+                <a href="#" class="nav-item" data-view="fencing">
+                    <i class="fas fa-draw-polygon"></i>
+                    <span>Area Fencing</span>
+                </a>
+                <a href="#" class="nav-item" data-view="team">
+                    <i class="fas fa-users"></i>
+                    <span>Team</span>
+                </a>
+                <a href="#" class="nav-item" data-view="settings">
+                    <i class="fas fa-cog"></i>
+                    <span>Settings</span>
+                </a>
+            </nav>
+            
+            <div class="user-panel">
+                <div class="user-info">
+                    <div class="user-avatar" id="userAvatar">
+                        <i class="fas fa-user"></i>
+                    </div>
+                    <div class="user-details">
+                        <span class="user-name" id="userName">Loading...</span>
+                        <span class="user-role" id="userRole">-</span>
+                    </div>
+                </div>
+                <button class="logout-btn" onclick="logout()">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <div class="header-left">
+                    <button class="menu-toggle" onclick="toggleSidebar()">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                    <h1 id="pageTitle">Dashboard</h1>
+                </div>
+                <div class="header-right">
+                    <div class="connection-status" id="connectionStatus">
+                        <span class="status-dot"></span>
+                        <span>Connected</span>
+                    </div>
+                    <div class="notifications">
+                        <button class="notif-btn" onclick="toggleNotifications()">
+                            <i class="fas fa-bell"></i>
+                            <span class="notif-badge" id="notifBadge">0</span>
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Dashboard View -->
+            <section class="view active" id="dashboardView">
+                <div class="dashboard-grid">
+                    <!-- Rover Status Card -->
+                    <div class="card rover-status-card">
+                        <h3><i class="fas fa-robot"></i> Rover Status</h3>
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="label">State</span>
+                                <span class="value" id="roverState">PATROL</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Battery</span>
+                                <span class="value" id="roverBattery">--%</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Temperature</span>
+                                <span class="value" id="roverTemp">--°C</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Distance</span>
+                                <span class="value" id="roverDistance">-- cm</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Mini Map Card -->
+                    <div class="card mini-map-card">
+                        <h3><i class="fas fa-map"></i> Location</h3>
+                        <div id="miniMap"></div>
+                    </div>
+
+                    <!-- Live Stream Preview -->
+                    <div class="card stream-preview-card">
+                        <h3><i class="fas fa-video"></i> Live Feed</h3>
+                        <div class="stream-container">
+                            <img id="streamPreview" src="" alt="No Stream">
+                            <div class="stream-overlay">
+                                <span class="stream-status" id="streamStatus">Offline</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Alerts Card -->
+                    <div class="card alerts-card">
+                        <h3><i class="fas fa-exclamation-triangle"></i> Recent Alerts</h3>
+                        <div class="alerts-list" id="alertsList">
+                            <div class="no-data">No alerts</div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Stats -->
+                    <div class="card stats-card">
+                        <h3><i class="fas fa-chart-bar"></i> Today's Stats</h3>
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <span class="stat-value" id="packetsToday">0</span>
+                                <span class="stat-label">Packets</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-value" id="distanceCovered">0</span>
+                                <span class="stat-label">Meters</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-value" id="hazardsDetected">0</span>
+                                <span class="stat-label">Hazards</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Controls -->
+                    <div class="card controls-card">
+                        <h3><i class="fas fa-gamepad"></i> Quick Controls</h3>
+                        <div class="control-buttons">
+                            <button class="ctrl-btn" onclick="sendCommand('STOP')" title="Emergency Stop">
+                                <i class="fas fa-stop"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('FORWARD')" title="Forward">
+                                <i class="fas fa-arrow-up"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('BACKWARD')" title="Backward">
+                                <i class="fas fa-arrow-down"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('LEFT')" title="Turn Left">
+                                <i class="fas fa-arrow-left"></i>
+                            </button>
+                            <button class="ctrl-btn" onclick="sendCommand('RIGHT')" title="Turn Right">
+                                <i class="fas fa-arrow-right"></i>
+                            </button>
+                            <button class="ctrl-btn return-btn" onclick="sendCommand('RETURN_BASE')" title="Return to Base">
+                                <i class="fas fa-home"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Map View -->
+            <section class="view" id="mapView">
+                <div class="map-container">
+                    <div id="mainMap"></div>
+                    <div class="map-controls">
+                        <button class="map-btn" onclick="centerOnRover()" title="Center on Rover">
+                            <i class="fas fa-crosshairs"></i>
+                        </button>
+                        <button class="map-btn" onclick="centerOnBase()" title="Center on Base">
+                            <i class="fas fa-home"></i>
+                        </button>
+                        <button class="map-btn" onclick="toggleFencingMode()" title="Draw Fence">
+                            <i class="fas fa-draw-polygon"></i>
+                        </button>
+                    </div>
+                    <div class="rover-info-panel">
+                        <h4>Rover Position</h4>
+                        <p><strong>Lat:</strong> <span id="roverLat">--</span></p>
+                        <p><strong>Lng:</strong> <span id="roverLng">--</span></p>
+                        <p><strong>Heading:</strong> <span id="roverHeading">--</span>°</p>
+                        <p><strong>Speed:</strong> <span id="roverSpeed">--</span></p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Live Stream View -->
+            <section class="view" id="streamView">
+                <div class="stream-view-container">
+                    <div class="main-stream">
+                        <img id="mainStream" src="" alt="No Stream Available">
+                        <div class="stream-controls">
+                            <button onclick="toggleFullscreen()">
+                                <i class="fas fa-expand"></i>
+                            </button>
+                            <button onclick="takeSnapshot()">
+                                <i class="fas fa-camera"></i>
+                            </button>
+                            <button onclick="toggleRecording()">
+                                <i class="fas fa-circle"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="stream-info">
+                        <h3>Stream Information</h3>
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <span class="label">Status</span>
+                                <span class="value" id="streamInfoStatus">Offline</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">Resolution</span>
+                                <span class="value">320x240</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">FPS</span>
+                                <span class="value" id="streamFps">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Chat View -->
+            <section class="view" id="chatView">
+                <div class="chat-container">
+                    <div class="chat-sidebar">
+                        <h3>Channels</h3>
+                        <div class="channel-list">
+                            <div class="channel active" data-channel="general">
+                                <i class="fas fa-hashtag"></i>
+                                <span>general</span>
+                            </div>
+                            <div class="channel" data-channel="alerts">
+                                <i class="fas fa-exclamation-circle"></i>
+                                <span>alerts</span>
+                            </div>
+                            <div class="channel" data-channel="commands">
+                                <i class="fas fa-terminal"></i>
+                                <span>commands</span>
+                            </div>
+                        </div>
+                        <h3>Online Users</h3>
+                        <div class="online-users" id="onlineUsers">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+                    <div class="chat-main">
+                        <div class="chat-header">
+                            <span class="channel-name"># general</span>
+                            <span class="channel-desc">General discussion for forest officers</span>
+                        </div>
+                        <div class="messages-container" id="messagesContainer">
+                            <!-- Messages populated dynamically -->
+                        </div>
+                        <div class="chat-input-container">
+                            <input type="text" id="chatInput" placeholder="Type a message..." onkeypress="handleChatKeypress(event)">
+                            <button onclick="sendMessage()">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Fencing View -->
+            <section class="view" id="fencingView">
+                <div class="fencing-container">
+                    <div class="fencing-map">
+                        <div id="fencingMap"></div>
+                    </div>
+                    <div class="fencing-panel">
+                        <h3><i class="fas fa-draw-polygon"></i> Patrol Area</h3>
+                        <div class="fencing-info">
+                            <p>Define the area where Stasis will patrol. Click on the map to add points.</p>
+                            <div class="current-fence">
+                                <h4>Current Fence</h4>
+                                <p><strong>Points:</strong> <span id="fencePoints">0</span></p>
+                                <p><strong>Area:</strong> <span id="fenceArea">0</span> m²</p>
+                            </div>
+                        </div>
+                        <div class="fencing-actions">
+                            <button class="btn primary" onclick="startFencing()">
+                                <i class="fas fa-pencil-alt"></i> Draw New Fence
+                            </button>
+                            <button class="btn secondary" onclick="clearFence()">
+                                <i class="fas fa-trash"></i> Clear Fence
+                            </button>
+                            <button class="btn success" onclick="saveFence()">
+                                <i class="fas fa-save"></i> Save Fence
+                            </button>
+                        </div>
+                        <div class="patrol-radius">
+                            <h4>Default Patrol Radius</h4>
+                            <p>If no fence is set, Stasis will patrol within this radius from base:</p>
+                            <div class="radius-slider">
+                                <input type="range" id="patrolRadius" min="50" max="1000" value="250" oninput="updateRadiusDisplay()">
+                                <span id="radiusValue">250m</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Team View -->
+            <section class="view" id="teamView">
+                <div class="team-container">
+                    <div class="team-section">
+                        <h3><i class="fas fa-crown"></i> Main Team Members</h3>
+                        <div class="team-grid" id="mainTeamGrid">
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Kartik</span>
+                                    <span class="member-role">Leader & Initiative</span>
+                                </div>
+                                <span class="rank-badge admin">Admin</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Harish</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge moderator">Moderator</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Ryan Ahmed</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge moderator">Moderator</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Mohaideen Ijaz</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge officer">Officer</span>
+                            </div>
+                            <div class="team-card">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Swethen</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge officer">Officer</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="team-section">
+                        <h3><i class="fas fa-hands-helping"></i> Supporters</h3>
+                        <div class="team-grid" id="supportersGrid">
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Stephen</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Krish</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Inba</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Baavasri</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                            <div class="team-card supporter">
+                                <div class="member-avatar"><i class="fas fa-user"></i></div>
+                                <div class="member-info">
+                                    <span class="member-name">Janane</span>
+                                    <span class="member-role">Team Member</span>
+                                </div>
+                                <span class="rank-badge supporter">Supporter</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="team-section">
+                        <h3><i class="fas fa-shield-alt"></i> Role Permissions</h3>
+                        <div class="permissions-table">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Permission</th>
+                                        <th>Admin</th>
+                                        <th>Moderator</th>
+                                        <th>Officer</th>
+                                        <th>Supporter</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>Full Control</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Send Commands</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>View Live Stream</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Chat</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Set Patrol Area</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Manage Users</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Receive Daily Reports</td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-check text-success"></i></td>
+                                        <td><i class="fas fa-times text-danger"></i></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings View -->
+            <section class="view" id="settingsView">
+                <div class="settings-container">
+                    <div class="settings-section">
+                        <h3><i class="fas fa-server"></i> Connection Settings</h3>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label>Base Station IP</label>
+                                <input type="text" id="baseStationIP" value="192.168.4.1">
+                            </div>
+                            <div class="form-group">
+                                <label>API Port</label>
+                                <input type="number" id="apiPort" value="5000">
+                            </div>
+                            <div class="form-group">
+                                <label>Stream URL</label>
+                                <input type="text" id="streamUrl" placeholder="http://192.168.4.1:81/stream">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h3><i class="fas fa-bell"></i> Notification Settings</h3>
+                        <div class="settings-form">
+                            <div class="form-group checkbox">
+                                <input type="checkbox" id="enableAlerts" checked>
+                                <label for="enableAlerts">Enable Alert Notifications</label>
+                            </div>
+                            <div class="form-group checkbox">
+                                <input type="checkbox" id="enableSound" checked>
+                                <label for="enableSound">Sound Notifications</label>
+                            </div>
+                            <div class="form-group checkbox">
+                                <input type="checkbox" id="enableEmail" checked>
+                                <label for="enableEmail">Email Reports (Top 3 Ranks)</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h3><i class="fas fa-map-marker-alt"></i> Patrol Settings</h3>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label>Default Patrol Radius (meters)</label>
+                                <input type="number" id="defaultRadius" value="250" min="50" max="1000">
+                            </div>
+                            <div class="form-group">
+                                <label>Patrol Speed</label>
+                                <select id="patrolSpeed">
+                                    <option value="slow">Slow</option>
+                                    <option value="normal" selected>Normal</option>
+                                    <option value="fast">Fast</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Return Battery Threshold (%)</label>
+                                <input type="number" id="returnBattery" value="30" min="10" max="50">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-actions">
+                        <button class="btn primary" onclick="saveSettings()">
+                            <i class="fas fa-save"></i> Save Settings
+                        </button>
+                        <button class="btn secondary" onclick="resetSettings()">
+                            <i class="fas fa-undo"></i> Reset to Defaults
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Login Modal -->
+    <div class="modal" id="loginModal">
+        <div class="modal-content login-modal">
+            <div class="login-header">
+                <i class="fas fa-satellite-dish"></i>
+                <h2>STASIS SENTINEL</h2>
+                <p>Forest Monitoring System</p>
+            </div>
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="loginEmail" required placeholder="Enter your email">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="loginPassword" required placeholder="Enter your password">
+                </div>
+                <button type="submit" class="btn primary full-width">
+                    <i class="fas fa-sign-in-alt"></i> Login
+                </button>
+            </form>
+            <div class="login-footer">
+                <p>Team EdgeCase © 2026</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Panel -->
+    <div class="notification-panel" id="notificationPanel">
+        <div class="notif-header">
+            <h4>Notifications</h4>
+            <button onclick="clearNotifications()">Clear All</button>
+        </div>
+        <div class="notif-list" id="notifList">
+            <div class="no-notifications">No notifications</div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
+

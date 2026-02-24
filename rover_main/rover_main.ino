@@ -8,7 +8,7 @@
  * 
  * Hardware: ESP32-S3, L9110S motors, DS18B20, HC-SR04, MPU6050, Neo-6M GPS
  * 
- * Author: AeroSentinel
+ * Author: EdgeCase Team
  */
 
 #include <Arduino.h>

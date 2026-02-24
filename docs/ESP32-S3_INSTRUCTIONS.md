@@ -116,7 +116,7 @@ Go to **Sketch** → **Include Library** → **Manage Libraries** and install:
 ### Step 3: Open Firmware File
 
 1. Go to **File** → **Open**
-2. Navigate to `RoverProject/rover_main/rover_main.ino`
+2. Navigate to `rover_main/rover_main.ino`
 
 ### Step 4: Upload
 

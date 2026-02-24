@@ -6,7 +6,7 @@ This document describes the 3D printed parts used in the Stasis rover system.
 
 ## Overview
 
-The rover chassis and enclosure are designed to be 3D printed. All parts are located in the `RoverProject/.stl files/` directory.
+The rover chassis and enclosure are designed to be 3D printed. All parts are located in the `Roverproject.zip` archive in the root directory.
 
 ---
 

@@ -136,7 +136,7 @@ Copy the `station_monitor.py` file to the Pi:
 
 **From your computer:**
 ```bash
-scp RoverProject/base_station/station_monitor.py pi@Stasis-base.local:~/Stasis/
+scp base_station/station_monitor.py pi@Stasis-base.local:~/Stasis/
 ```
 
 **Or create directly on Pi:**
@@ -584,7 +584,7 @@ Copy the `station_monitor.py` file to the Pi:
 
 **From your computer:**
 ```bash
-scp RoverProject/base_station/station_monitor.py pi@Stasis-base.local:~/Stasis/
+scp base_station/station_monitor.py pi@Stasis-base.local:~/Stasis/
 ```
 
 **Or create directly on Pi:**
@@ -1032,7 +1032,7 @@ Copy the `station_monitor.py` file to the Pi:
 
 **From your computer:**
 ```bash
-scp RoverProject/base_station/station_monitor.py pi@Stasis-base.local:~/Stasis/
+scp base_station/station_monitor.py pi@Stasis-base.local:~/Stasis/
 ```
 
 **Or create directly on Pi:**
