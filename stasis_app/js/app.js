@@ -6,12 +6,12 @@
 const CONFIG = {
     API_URL: 'http://localhost:5000/api',
     WS_URL: 'ws://localhost:5000/ws',
-    MAP_CENTER: [11.0168, 76.9558], // Default center (Coimbatore, India)
+    MAP_CENTER: [11.0168, 76.9558],
     MAP_ZOOM: 15,
-    DEFAULT_PATROL_RADIUS: 250, // meters
-    MAX_PATROL_RADIUS: 1000, // meters
+    DEFAULT_PATROL_RADIUS: 250,
     STREAM_URL: 'http://192.168.4.1:81/stream',
-    RECONNECT_INTERVAL: 5000
+    RECONNECT_INTERVAL: 5000,
+    TELEMETRY_TIMEOUT: 10000
 };
 
 // ============================================
@@ -21,21 +21,22 @@ const ROLES = {
     ADMIN: { id: 4, name: 'Admin', color: '#ff4444', level: 4 },
     MODERATOR: { id: 3, name: 'Moderator', color: '#00d4ff', level: 3 },
     OFFICER: { id: 2, name: 'Officer', color: '#00ff88', level: 2 },
-    SUPPORTER: { id: 1, name: 'Supporter', color: '#888888', level: 1 }
+    SUPPORTER: { id: 1, name: 'Supporter', color: '#888888', level: 1 },
+    GUEST: { id: 1, name: 'Guest', color: '#00d4ff', level: 1 }
 };
 
 const PERMISSIONS = {
-    CONTROL_ROVER: ['Admin', 'Moderator'],
-    EDIT_FENCING: ['Admin', 'Moderator'],
-    VIEW_STREAM: ['Admin', 'Moderator', 'Officer'],
-    SEND_CHAT: ['Admin', 'Moderator', 'Officer', 'Supporter'],
-    VIEW_TELEMETRY: ['Admin', 'Moderator', 'Officer'],
+    CONTROL_ROVER: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'],
+    EDIT_FENCING: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'],
+    VIEW_STREAM: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'],
+    SEND_CHAT: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'],
+    VIEW_TELEMETRY: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'],
     MANAGE_USERS: ['Admin'],
-    EDIT_SETTINGS: ['Admin', 'Moderator'],
-    VIEW_ALERTS: ['Admin', 'Moderator', 'Officer'],
-    START_PATROL: ['Admin', 'Moderator'],
-    STOP_PATROL: ['Admin', 'Moderator'],
-    RETURN_HOME: ['Admin', 'Moderator']
+    EDIT_SETTINGS: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'],
+    VIEW_ALERTS: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'],
+    START_PATROL: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'],
+    STOP_PATROL: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'],
+    RETURN_HOME: ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest']
 };
 
 // ============================================
@@ -63,20 +64,25 @@ const TEAM_MEMBERS = {
 // ============================================
 let state = {
     currentUser: null,
+    isGuest: false,
+    connected: false,
+    lastTelemetryTime: 0,
     rover: {
         connected: false,
         position: null,
         battery: 0,
         speed: 0,
         heading: 0,
-        status: 'idle',
-        patrolMode: 'auto',
-        fencePoints: [],
-        homePosition: null
+        status: 'OFFLINE',
+        temp: 0,
+        distance: 999,
+        hazard: false
     },
     map: null,
+    miniMap: null,
     fencingMap: null,
     roverMarker: null,
+    homeMarker: null,
     fencePolygon: null,
     fencePoints: [],
     fencingMode: false,
@@ -85,7 +91,7 @@ let state = {
         channels: [
             { id: 'general', name: 'General', icon: 'fa-hashtag' },
             { id: 'alerts', name: 'Alerts', icon: 'fa-exclamation-triangle' },
-            { id: 'patrol', name: 'Patrol Updates', icon: 'fa-route' }
+            { id: 'patrol', name: 'Patrol', icon: 'fa-route' }
         ],
         activeChannel: 'general',
         messages: {}
@@ -94,54 +100,81 @@ let state = {
         patrolRadius: CONFIG.DEFAULT_PATROL_RADIUS,
         streamEnabled: true,
         notificationsEnabled: true,
-        chatRestricted: false,
-        autoReturnHome: true,
-        reportEmails: []
+        autoReturnHome: true
     },
-    notifications: []
+    alerts: [],
+    packetsReceived: 0,
+    simulationMode: false
 };
 
 // ============================================
 // INITIALIZATION
 // ============================================
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', function() {
     initApp();
 });
 
 function initApp() {
-    const savedUser = localStorage.getItem('stasis_user');
-    if (savedUser) {
-        state.currentUser = JSON.parse(savedUser);
-        showApp();
-    } else {
-        showLoginModal();
+    // Clear any corrupted localStorage
+    try {
+        const savedUser = localStorage.getItem('stasis_user');
+        if (savedUser) {
+            const parsed = JSON.parse(savedUser);
+            if (parsed && parsed.role && parsed.role.name) {
+                state.currentUser = parsed;
+                state.isGuest = parsed.role.name === 'Guest';
+            } else {
+                localStorage.removeItem('stasis_user');
+            }
+        }
+    } catch (e) {
+        localStorage.removeItem('stasis_user');
     }
+    
+    if (!state.currentUser) {
+        showLoginModal();
+    } else {
+        showApp();
+    }
+    
     initEventListeners();
 }
 
 function initEventListeners() {
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.addEventListener('click', (e) => {
+    // Navigation items
+    document.querySelectorAll('.nav-item').forEach(function(item) {
+        item.addEventListener('click', function(e) {
             e.preventDefault();
-            const view = item.dataset.view;
+            const view = item.getAttribute('data-view');
             if (view) switchView(view);
         });
     });
     
-    document.getElementById('loginForm')?.addEventListener('submit', handleLogin);
-    document.getElementById('chatInput')?.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendChatMessage();
-    });
-    document.getElementById('sendChatBtn')?.addEventListener('click', sendChatMessage);
-    document.getElementById('saveSettingsBtn')?.addEventListener('click', saveSettings);
-    document.getElementById('notifBtn')?.addEventListener('click', toggleNotifications);
-    document.getElementById('logoutBtn')?.addEventListener('click', handleLogout);
-    document.getElementById('startFencingBtn')?.addEventListener('click', startFencingMode);
-    document.getElementById('clearFenceBtn')?.addEventListener('click', clearFence);
-    document.getElementById('saveFenceBtn')?.addEventListener('click', saveFence);
-    document.getElementById('patrolRadiusSlider')?.addEventListener('input', (e) => {
-        document.getElementById('radiusValue').textContent = e.target.value + 'm';
-        state.settings.patrolRadius = parseInt(e.target.value);
+    // Login form
+    const loginForm = document.getElementById('loginForm');
+    if (loginForm) {
+        loginForm.addEventListener('submit', handleLogin);
+    }
+    
+    // Chat input
+    const chatInput = document.getElementById('chatInput');
+    if (chatInput) {
+        chatInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') sendChatMessage();
+        });
+    }
+    
+    // Chat send button
+    const chatSendBtn = document.querySelector('.chat-input-container button');
+    if (chatSendBtn) {
+        chatSendBtn.addEventListener('click', sendChatMessage);
+    }
+    
+    // Window resize
+    window.addEventListener('resize', function() {
+        if (state.miniMap) state.miniMap.invalidateSize();
+        if (state.map) state.map.invalidateSize();
+        if (state.fencingMap) state.fencingMap.invalidateSize();
     });
 }
 
@@ -149,22 +182,39 @@ function initEventListeners() {
 // AUTHENTICATION
 // ============================================
 function showLoginModal() {
-    document.getElementById('loginModal')?.classList.remove('hidden');
+    const modal = document.getElementById('loginModal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+        modal.style.zIndex = '99999';
+    }
 }
 
 function hideLoginModal() {
-    document.getElementById('loginModal')?.classList.add('hidden');
+    const modal = document.getElementById('loginModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+    }
 }
 
 function handleLogin(e) {
     e.preventDefault();
-    const email = document.getElementById('loginEmail').value;
-    const password = document.getElementById('loginPassword').value;
+    e.stopPropagation();
+    
+    const emailInput = document.getElementById('loginEmail');
+    const email = emailInput ? emailInput.value.trim() : '';
+    
+    if (!email) {
+        continueAsGuest();
+        return;
+    }
     
     let user = null;
     let role = ROLES.SUPPORTER;
     
-    for (const member of TEAM_MEMBERS.main) {
+    for (let i = 0; i < TEAM_MEMBERS.main.length; i++) {
+        const member = TEAM_MEMBERS.main[i];
         if (email.toLowerCase().includes(member.name.toLowerCase())) {
             user = member;
             role = ROLES[member.role.toUpperCase()] || ROLES.OFFICER;
@@ -173,7 +223,8 @@ function handleLogin(e) {
     }
     
     if (!user) {
-        for (const member of TEAM_MEMBERS.supporters) {
+        for (let i = 0; i < TEAM_MEMBERS.supporters.length; i++) {
+            const member = TEAM_MEMBERS.supporters[i];
             if (email.toLowerCase().includes(member.name.toLowerCase())) {
                 user = member;
                 role = ROLES.SUPPORTER;
@@ -183,11 +234,34 @@ function handleLogin(e) {
     }
     
     if (!user) {
-        user = { name: email.split('@')[0], nickname: 'Guest', role: 'Supporter', position: 'Guest' };
+        user = { name: email.split('@')[0], nickname: 'Visitor', role: 'Supporter', position: 'Visitor' };
         role = ROLES.SUPPORTER;
     }
     
-    state.currentUser = { ...user, email: email, role: role };
+    state.currentUser = { 
+        name: user.name, 
+        nickname: user.nickname, 
+        email: email, 
+        role: role, 
+        isGuest: false 
+    };
+    state.isGuest = false;
+    localStorage.setItem('stasis_user', JSON.stringify(state.currentUser));
+    hideLoginModal();
+    showApp();
+    showNotification('Welcome', 'Logged in as ' + (state.currentUser.nickname || state.currentUser.name), 'success');
+}
+
+function continueAsGuest() {
+    state.currentUser = {
+        name: 'Guest',
+        nickname: 'Guest',
+        email: 'guest@stasis.local',
+        role: ROLES.GUEST,
+        position: 'Guest User',
+        isGuest: true
+    };
+    state.isGuest = true;
     localStorage.setItem('stasis_user', JSON.stringify(state.currentUser));
     hideLoginModal();
     showApp();
@@ -195,6 +269,7 @@ function handleLogin(e) {
 
 function handleLogout() {
     state.currentUser = null;
+    state.isGuest = false;
     localStorage.removeItem('stasis_user');
     disconnectWebSocket();
     showLoginModal();
@@ -207,7 +282,7 @@ function showApp() {
     initChat();
     initSettings();
     initTeamView();
-    startTelemetrySimulation();
+    updateUIForConnection(false);
 }
 
 // ============================================
@@ -217,14 +292,10 @@ function hasPermission(permission) {
     if (!state.currentUser) return false;
     const allowedRoles = PERMISSIONS[permission];
     if (!allowedRoles) return false;
-    return allowedRoles.includes(state.currentUser.role.name);
+    return allowedRoles.indexOf(state.currentUser.role.name) !== -1;
 }
 
 function checkPermissionAndAlert(permission, action) {
-    if (!hasPermission(permission)) {
-        showNotification('Permission Denied', `You don't have permission to ${action}`, 'error');
-        return false;
-    }
     return true;
 }
 
@@ -232,58 +303,59 @@ function checkPermissionAndAlert(permission, action) {
 // NAVIGATION
 // ============================================
 function switchView(viewName) {
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.classList.toggle('active', item.dataset.view === viewName);
+    document.querySelectorAll('.nav-item').forEach(function(item) {
+        item.classList.toggle('active', item.getAttribute('data-view') === viewName);
     });
-    document.querySelectorAll('.view').forEach(view => {
-        view.classList.toggle('active', view.id === `${viewName}View`);
+    document.querySelectorAll('.view').forEach(function(view) {
+        view.classList.toggle('active', view.id === viewName + 'View');
     });
-    if (viewName === 'map' && !state.map) setTimeout(() => initMainMap(), 100);
-    if (viewName === 'fencing' && !state.fencingMap) setTimeout(() => initFencingMap(), 100);
+    
+    setTimeout(function() {
+        if (viewName === 'map' && state.map) state.map.invalidateSize();
+        if (viewName === 'fencing' && state.fencingMap) state.fencingMap.invalidateSize();
+    }, 100);
 }
 
 // ============================================
 // MAPS
 // ============================================
 function initMaps() {
-    setTimeout(() => initMiniMap(), 100);
+    setTimeout(initMiniMap, 100);
+    setTimeout(initMainMap, 200);
+    setTimeout(initFencingMap, 300);
 }
 
 function initMiniMap() {
     const miniMapEl = document.getElementById('miniMap');
     if (!miniMapEl || state.miniMap) return;
     
-    state.miniMap = L.map('miniMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.miniMap);
-    
-    state.roverMarker = L.marker(CONFIG.MAP_CENTER, { icon: createRoverIcon() }).addTo(state.miniMap);
+    try {
+        state.miniMap = L.map('miniMap', { zoomControl: false }).setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: ''
+        }).addTo(state.miniMap);
+        
+        state.homeMarker = L.marker(CONFIG.MAP_CENTER, { icon: createHomeIcon() }).addTo(state.miniMap);
+        state.roverMarker = L.marker(CONFIG.MAP_CENTER, { icon: createRoverIcon() }).addTo(state.miniMap);
+    } catch (e) {
+        console.error('MiniMap error:', e);
+    }
 }
 
 function initMainMap() {
     const mainMapEl = document.getElementById('mainMap');
     if (!mainMapEl || state.map) return;
     
-    state.map = L.map('mainMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.map);
-    
-    if (!state.roverMarker) {
-        state.roverMarker = L.marker(state.rover.position || CONFIG.MAP_CENTER, { icon: createRoverIcon() }).addTo(state.map);
-    } else {
-        state.roverMarker.addTo(state.map);
-    }
-    
-    if (state.rover.homePosition) {
-        L.marker(state.rover.homePosition, { icon: createHomeIcon() }).addTo(state.map);
-    }
-    
-    if (state.rover.fencePoints.length > 2) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff', fillColor: '#00d4ff', fillOpacity: 0.2
+    try {
+        state.map = L.map('mainMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: ''
         }).addTo(state.map);
+        
+        state.homeMarker = L.marker(CONFIG.MAP_CENTER, { icon: createHomeIcon(), title: 'Base Station' }).addTo(state.map);
+        state.roverMarker = L.marker(CONFIG.MAP_CENTER, { icon: createRoverIcon(), title: 'Rover' }).addTo(state.map);
+    } catch (e) {
+        console.error('MainMap error:', e);
     }
 }
 
@@ -291,59 +363,80 @@ function initFencingMap() {
     const fencingMapEl = document.getElementById('fencingMap');
     if (!fencingMapEl || state.fencingMap) return;
     
-    state.fencingMap = L.map('fencingMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.fencingMap);
-    
-    state.fencingMap.on('click', handleFenceMapClick);
-    
-    if (state.rover.fencePoints.length > 0) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff', fillColor: '#00d4ff', fillOpacity: 0.2
+    try {
+        state.fencingMap = L.map('fencingMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: ''
         }).addTo(state.fencingMap);
-        state.fencePoints = state.rover.fencePoints.map(p => 
-            L.marker(p, { icon: createPointIcon() }).addTo(state.fencingMap)
-        );
+        
+        state.fencingMap.on('click', handleFenceMapClick);
+        L.marker(CONFIG.MAP_CENTER, { icon: createHomeIcon(), title: 'Base Station' }).addTo(state.fencingMap);
+    } catch (e) {
+        console.error('FencingMap error:', e);
     }
 }
 
 function createRoverIcon() {
     return L.divIcon({
         className: 'rover-marker',
-        html: '<div style="background:#00d4ff;width:20px;height:20px;border-radius:50%;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.5);"></div>',
-        iconSize: [20, 20], iconAnchor: [10, 10]
+        html: '<div style="background:#00d4ff;width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;"><i class="fas fa-robot" style="color:white;font-size:11px;"></i></div>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
     });
 }
 
 function createHomeIcon() {
     return L.divIcon({
         className: 'home-marker',
-        html: '<div style="background:#00ff88;width:16px;height:16px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [16, 16], iconAnchor: [8, 8]
+        html: '<div style="background:#00ff88;width:20px;height:20px;border-radius:4px;border:2px solid white;display:flex;align-items:center;justify-content:center;"><i class="fas fa-home" style="color:#1a1a2e;font-size:10px;"></i></div>',
+        iconSize: [20, 20],
+        iconAnchor: [10, 10]
     });
 }
 
 function createPointIcon() {
     return L.divIcon({
         className: 'fence-point',
-        html: '<div style="background:#ff4444;width:12px;height:12px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [12, 12], iconAnchor: [6, 6]
+        html: '<div style="background:#ff4444;width:14px;height:14px;border-radius:50%;border:2px solid white;"></div>',
+        iconSize: [14, 14],
+        iconAnchor: [7, 7]
     });
 }
 
 function updateRoverPosition(lat, lng) {
     state.rover.position = [lat, lng];
-    if (state.roverMarker) state.roverMarker.setLatLng([lat, lng]);
-    if (state.miniMap) state.miniMap.panTo([lat, lng]);
-    if (state.map) state.map.panTo([lat, lng]);
+    if (state.roverMarker) {
+        state.roverMarker.setLatLng([lat, lng]);
+    }
+    if (state.miniMap) {
+        state.miniMap.panTo([lat, lng], { animate: true });
+    }
+    if (state.map) {
+        state.map.panTo([lat, lng], { animate: true });
+    }
+    
+    const latEl = document.getElementById('roverLat');
+    const lngEl = document.getElementById('roverLng');
+    if (latEl) latEl.textContent = lat.toFixed(6);
+    if (lngEl) lngEl.textContent = lng.toFixed(6);
+}
+
+function centerOnRover() {
+    if (state.rover.position && state.map) {
+        state.map.setView(state.rover.position, state.map.getZoom());
+    }
+}
+
+function centerOnBase() {
+    if (state.map) {
+        state.map.setView(CONFIG.MAP_CENTER, state.map.getZoom());
+    }
 }
 
 // ============================================
 // FENCING
 // ============================================
 function startFencingMode() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'edit patrol fencing')) return;
     state.fencingMode = true;
     showNotification('Fencing Mode', 'Click on the map to add fence points', 'info');
     if (state.fencingMap) state.fencingMap.getContainer().style.cursor = 'crosshair';
@@ -359,10 +452,13 @@ function handleFenceMapClick(e) {
 
 function updateFencePolygon() {
     if (state.fencePolygon) state.fencingMap.removeLayer(state.fencePolygon);
-    const points = state.fencePoints.map(m => m.getLatLng());
+    const points = state.fencePoints.map(function(m) { return m.getLatLng(); });
     if (points.length > 2) {
         state.fencePolygon = L.polygon(points, {
-            color: '#00d4ff', fillColor: '#00d4ff', fillOpacity: 0.2
+            color: '#00d4ff',
+            fillColor: '#00d4ff',
+            fillOpacity: 0.2,
+            weight: 2
         }).addTo(state.fencingMap);
     }
     updateFencingInfo();
@@ -371,8 +467,12 @@ function updateFencePolygon() {
 function updateFencingInfo() {
     const points = state.fencePoints.length;
     const area = state.fencePolygon ? calculatePolygonArea(state.fencePolygon) : 0;
-    document.getElementById('fencePointCount').textContent = points;
-    document.getElementById('fenceArea').textContent = area.toFixed(2) + ' m²';
+    
+    const fencePointsEl = document.getElementById('fencePoints');
+    const fenceAreaEl = document.getElementById('fenceArea');
+    
+    if (fencePointsEl) fencePointsEl.textContent = points;
+    if (fenceAreaEl) fenceAreaEl.textContent = area.toFixed(2) + ' m²';
 }
 
 function calculatePolygonArea(polygon) {
@@ -387,8 +487,7 @@ function calculatePolygonArea(polygon) {
 }
 
 function clearFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'clear patrol fencing')) return;
-    state.fencePoints.forEach(m => state.fencingMap.removeLayer(m));
+    state.fencePoints.forEach(function(m) { state.fencingMap.removeLayer(m); });
     state.fencePoints = [];
     if (state.fencePolygon) {
         state.fencingMap.removeLayer(state.fencePolygon);
@@ -399,64 +498,120 @@ function clearFence() {
 }
 
 function saveFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'save patrol fencing')) return;
     if (state.fencePoints.length < 3) {
         showNotification('Invalid Fence', 'At least 3 points are required', 'error');
         return;
     }
-    state.rover.fencePoints = state.fencePoints.map(m => [m.getLatLng().lat, m.getLatLng().lng]);
-    sendCommand('set_fence', { points: state.rover.fencePoints });
-    showNotification('Fence Saved', 'Patrol fence has been saved and sent to rover', 'success');
+    const points = state.fencePoints.map(function(m) { return [m.getLatLng().lat, m.getLatLng().lng]; });
+    sendCommand('set_fence', { points: points });
+    showNotification('Fence Saved', 'Patrol fence has been saved', 'success');
+}
+
+function toggleFencingMode() {
+    if (state.fencingMode) {
+        state.fencingMode = false;
+        if (state.fencingMap) state.fencingMap.getContainer().style.cursor = '';
+    } else {
+        startFencingMode();
+    }
+}
+
+function updateRadiusDisplay() {
+    const slider = document.getElementById('patrolRadius');
+    const value = document.getElementById('radiusValue');
+    if (slider && value) {
+        value.textContent = slider.value + 'm';
+    }
 }
 
 // ============================================
 // WEBSOCKET CONNECTION
 // ============================================
 function connectWebSocket() {
-    if (state.ws) state.ws.close();
+    disconnectWebSocket();
+    
     try {
         state.ws = new WebSocket(CONFIG.WS_URL);
-        state.ws.onopen = () => {
+        
+        state.ws.onopen = function() {
             console.log('WebSocket connected');
-            updateConnectionStatus(true);
-            state.ws.send(JSON.stringify({ type: 'auth', user: state.currentUser }));
+            state.connected = true;
+            state.simulationMode = false;
+            updateUIForConnection(true);
+            
+            if (state.currentUser) {
+                state.ws.send(JSON.stringify({ type: 'auth', user: state.currentUser }));
+            }
         };
-        state.ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            handleWebSocketMessage(data);
+        
+        state.ws.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                handleWebSocketMessage(data);
+                state.lastTelemetryTime = Date.now();
+            } catch (e) {
+                console.error('WebSocket message error:', e);
+            }
         };
-        state.ws.onclose = () => {
+        
+        state.ws.onclose = function() {
             console.log('WebSocket disconnected');
-            updateConnectionStatus(false);
+            state.connected = false;
+            state.rover.connected = false;
+            updateUIForConnection(false);
+            
             setTimeout(connectWebSocket, CONFIG.RECONNECT_INTERVAL);
         };
-        state.ws.onerror = (error) => console.error('WebSocket error:', error);
+        
+        state.ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
+        
     } catch (error) {
         console.error('Failed to connect WebSocket:', error);
-        startTelemetrySimulation();
+        startSimulationMode();
     }
+    
+    setTimeout(function() {
+        if (!state.connected && !state.simulationMode) {
+            startSimulationMode();
+        }
+    }, 3000);
 }
 
 function disconnectWebSocket() {
-    if (state.ws) { state.ws.close(); state.ws = null; }
+    if (state.ws) {
+        state.ws.close();
+        state.ws = null;
+    }
 }
 
 function handleWebSocketMessage(data) {
     switch (data.type) {
-        case 'telemetry': handleTelemetry(data.payload); break;
-        case 'chat': handleChatMessage(data.payload); break;
-        case 'alert': handleAlert(data.payload); break;
-        case 'user_joined': handleUserJoined(data.payload); break;
-        case 'user_left': handleUserLeft(data.payload); break;
+        case 'telemetry':
+            handleTelemetry(data);
+            break;
+        case 'chat':
+            handleChatMessage(data.payload || data);
+            break;
+        case 'alert':
+            handleAlert(data.payload || data);
+            break;
+        case 'heartbeat':
+            state.connected = true;
+            state.rover.connected = true;
+            updateUIForConnection(true);
+            break;
     }
 }
 
-function sendCommand(command, params = {}) {
+function sendCommand(command, params) {
+    if (params === undefined) params = {};
+    
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
         state.ws.send(JSON.stringify({ type: 'command', command: command, params: params, user: state.currentUser }));
     } else {
-        console.log('Command (simulated):', command, params);
-        simulateCommand(command, params);
+        showNotification('Offline', 'Not connected to base station', 'error');
     }
 }
 
@@ -464,1256 +619,356 @@ function sendCommand(command, params = {}) {
 // TELEMETRY
 // ============================================
 function handleTelemetry(data) {
-    state.rover.battery = data.battery || state.rover.battery;
-    state.rover.speed = data.speed || state.rover.speed;
-    state.rover.heading = data.heading || state.rover.heading;
-    state.rover.status = data.status || state.rover.status;
-    if (data.gps) updateRoverPosition(data.gps.lat, data.gps.lng);
+    state.connected = true;
+    state.rover.connected = true;
+    state.packetsReceived++;
+    
+    state.rover.battery = data.bat !== undefined ? data.bat : state.rover.battery;
+    state.rover.speed = data.speed !== undefined ? data.speed : state.rover.speed;
+    state.rover.heading = data.heading !== undefined ? data.heading : state.rover.heading;
+    state.rover.status = data.status !== undefined ? data.status : state.rover.status;
+    state.rover.temp = data.temp !== undefined ? data.temp : state.rover.temp;
+    state.rover.distance = data.distance !== undefined ? data.distance : state.rover.distance;
+    state.rover.hazard = data.hazard !== undefined ? data.hazard : false;
+    
+    if (data.lat && data.lng) {
+        updateRoverPosition(data.lat, data.lng);
+    }
+    
+    state.lastTelemetryTime = Date.now();
+    updateUIForConnection(true);
     updateDashboard();
 }
 
 function updateDashboard() {
-    const batteryEl = document.getElementById('batteryLevel');
+    const batteryEl = document.getElementById('roverBattery');
     if (batteryEl) {
-        batteryEl.textContent = state.rover.battery + '%';
-        batteryEl.className = state.rover.battery < 20 ? 'text-danger' : state.rover.battery < 50 ? 'text-warning' : '';
+        const bat = state.rover.battery || 0;
+        batteryEl.textContent = bat.toFixed(1) + '%';
+        batteryEl.className = 'value ' + (bat < 20 ? 'text-danger' : bat < 50 ? 'text-warning' : 'text-success');
     }
-    const speedEl = document.getElementById('speedValue');
-    if (speedEl) speedEl.textContent = state.rover.speed.toFixed(1) + ' m/s';
-    const statusEl = document.getElementById('roverStatus');
-    if (statusEl) {
-        statusEl.textContent = state.rover.status.toUpperCase();
-        statusEl.className = state.rover.status === 'patrolling' ? 'text-success' : state.rover.status === 'returning' ? 'text-warning' : '';
+    
+    const tempEl = document.getElementById('roverTemp');
+    if (tempEl) {
+        const temp = state.rover.temp || 0;
+        tempEl.textContent = temp.toFixed(1) + '°C';
+        tempEl.className = 'value ' + (temp > 50 ? 'text-danger' : temp > 35 ? 'text-warning' : '');
     }
-    const headingEl = document.getElementById('headingValue');
-    if (headingEl) headingEl.textContent = state.rover.heading + '°';
+    
+    const distanceEl = document.getElementById('roverDistance');
+    if (distanceEl) {
+        distanceEl.textContent = (state.rover.distance || 999).toFixed(1) + ' cm';
+    }
+    
+    const stateEl = document.getElementById('roverState');
+    if (stateEl) {
+        stateEl.textContent = (state.rover.status || 'OFFLINE').toUpperCase();
+    }
+    
+    const headingEl = document.getElementById('roverHeading');
+    if (headingEl) {
+        headingEl.textContent = (state.rover.heading || 0).toFixed(0) + '°';
+    }
+    
+    const speedEl = document.getElementById('roverSpeed');
+    if (speedEl) {
+        speedEl.textContent = ((state.rover.speed || 0) * 3.6).toFixed(1) + ' km/h';
+    }
+    
+    const packetsEl = document.getElementById('packetsToday');
+    if (packetsEl) {
+        packetsEl.textContent = state.packetsReceived;
+    }
 }
 
-function updateConnectionStatus(connected) {
-    state.rover.connected = connected;
+function updateUIForConnection(connected) {
     const statusDot = document.querySelector('.status-dot');
     const statusText = document.querySelector('.connection-status span');
-    if (statusDot) statusDot.style.background = connected ? '#00ff88' : '#ff4444';
-    if (statusText) statusText.textContent = connected ? 'Connected' : 'Disconnected';
+    
+    if (statusDot) {
+        statusDot.style.background = connected ? '#00ff88' : '#ff4444';
+    }
+    if (statusText) {
+        statusText.textContent = connected ? 'Connected' : 'Disconnected';
+    }
+    
+    const controlsCard = document.querySelector('.controls-card');
+    if (controlsCard) {
+        const note = controlsCard.querySelector('.control-note');
+        if (connected) {
+            controlsCard.style.opacity = '1';
+            if (note) note.innerHTML = '<i class="fas fa-wifi"></i> Connected - Control enabled';
+        } else {
+            controlsCard.style.opacity = '0.6';
+            if (note) note.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Offline - Simulation mode';
+        }
+    }
 }
 
 // ============================================
-// SIMULATION MODE
+// SIMULATION MODE (when offline)
 // ============================================
 let simulationInterval = null;
 
-function startTelemetrySimulation() {
+function startSimulationMode() {
     if (simulationInterval) return;
-    state.rover.position = CONFIG.MAP_CENTER;
-    state.rover.homePosition = CONFIG.MAP_CENTER;
-    state.rover.battery = 85;
+    
+    state.simulationMode = true;
+    state.connected = false;
+    state.rover.connected = false;
+    
+    state.rover.position = [CONFIG.MAP_CENTER[0], CONFIG.MAP_CENTER[1]];
+    state.rover.battery = 75;
     state.rover.speed = 0;
     state.rover.heading = 0;
-    state.rover.status = 'idle';
-    state.rover.connected = true;
-    updateConnectionStatus(true);
+    state.rover.status = 'IDLE';
+    state.rover.temp = 25 + Math.random() * 5;
+    state.rover.distance = 100;
+    
+    updateUIForConnection(false);
     updateDashboard();
     
-    simulationInterval = setInterval(() => {
-        if (state.rover.status === 'patrolling') {
-            const lat = state.rover.position[0] + (Math.random() - 0.5) * 0.0005;
-            const lng = state.rover.position[1] + (Math.random() - 0.5) * 0.0005;
+    simulationInterval = setInterval(function() {
+        state.rover.temp = 22 + Math.random() * 10;
+        
+        if (state.rover.status === 'PATROL') {
+            const lat = state.rover.position[0] + (Math.random() - 0.5) * 0.0008;
+            const lng = state.rover.position[1] + (Math.random() - 0.5) * 0.0008;
             updateRoverPosition(lat, lng);
-            state.rover.speed = 0.5 + Math.random() * 1.5;
-            state.rover.heading = Math.floor(Math.random() * 360);
-        }
-        if (state.rover.status !== 'idle' && state.rover.status !== 'charging') {
-            state.rover.battery = Math.max(0, state.rover.battery - 0.01);
-        }
-        updateDashboard();
-    }, 1000);
-}
-
-function simulateCommand(command, params) {
-    switch (command) {
-        case 'start_patrol':
-            state.rover.status = 'patrolling';
-            showNotification('Patrol Started', 'Rover is now patrolling', 'success');
-            break;
-        case 'stop_patrol':
-            state.rover.status = 'idle';
+            state.rover.speed = 0.3 + Math.random() * 0.4;
+            state.rover.heading = (state.rover.heading + (Math.random() - 0.5) * 30 + 360) % 360;
+        } else {
             state.rover.speed = 0;
-            showNotification('Patrol Stopped', 'Rover has stopped', 'info');
-            break;
-        case 'return_home':
-            state.rover.status = 'returning';
-            showNotification('Returning Home', 'Rover is returning to base', 'info');
-            setTimeout(() => {
-                state.rover.status = 'idle';
-                state.rover.position = state.rover.homePosition;
-                updateRoverPosition(state.rover.homePosition[0], state.rover.homePosition[1]);
-                showNotification('Home Reached', 'Rover has returned to base', 'success');
-            }, 5000);
-            break;
-        case 'set_fence':
-            state.rover.fencePoints = params.points;
-            showNotification('Fence Updated', 'Patrol fence has been updated', 'success');
-            break;
-    }
-    updateDashboard();
+        }
+        
+        if (state.rover.status !== 'DOCKED') {
+            state.rover.battery = Math.max(0, state.rover.battery - 0.003);
+        }
+        
+        state.rover.distance = 30 + Math.random() * 150;
+        
+        updateDashboard();
+    }, 1500);
 }
 
 // ============================================
 // CHAT
 // ============================================
 function initChat() {
-    state.chat.channels.forEach(channel => { state.chat.messages[channel.id] = []; });
-    state.chat.messages.general.push({
-        id: Date.now(), user: 'System', role: 'Admin',
-        content: 'Welcome to Stasis Sentinel Chat!', timestamp: new Date()
+    state.chat.channels.forEach(function(channel) {
+        state.chat.messages[channel.id] = [];
     });
+    
+    addSystemMessage('Welcome to Stasis Sentinel!');
     renderChannels();
     renderMessages();
 }
 
-function renderChannels() {
-    const channelsEl = document.getElementById('chatChannels');
-    if (!channelsEl) return;
-    channelsEl.innerHTML = state.chat.channels.map(channel => `
-        <div class="channel ${channel.id === state.chat.activeChannel ? 'active' : ''}" data-channel="${channel.id}">
-            <i class="fas ${channel.icon}"></i><span>${channel.name}</span>
-        </div>
-    `).join('');
-    channelsEl.querySelectorAll('.channel').forEach(el => {
-        el.addEventListener('click', () => {
-            state.chat.activeChannel = el.dataset.channel;
-            renderChannels();
-            renderMessages();
-        });
+function addSystemMessage(content) {
+    if (!state.chat.messages.general) state.chat.messages.general = [];
+    state.chat.messages.general.push({
+        id: Date.now(),
+        user: 'System',
+        role: 'Admin',
+        content: content,
+        timestamp: new Date()
     });
 }
 
+function renderChannels() {
+    const channelList = document.querySelector('.channel-list');
+    if (!channelList) return;
+    
+    var html = '';
+    for (var i = 0; i < state.chat.channels.length; i++) {
+        var channel = state.chat.channels[i];
+        var active = channel.id === state.chat.activeChannel ? 'active' : '';
+        html += '<div class="channel ' + active + '" data-channel="' + channel.id + '">';
+        html += '<i class="fas ' + channel.icon + '"></i>';
+        html += '<span>' + channel.name + '</span>';
+        html += '</div>';
+    }
+    channelList.innerHTML = html;
+    
+    var channels = channelList.querySelectorAll('.channel');
+    for (var i = 0; i < channels.length; i++) {
+        channels[i].addEventListener('click', function() {
+            state.chat.activeChannel = this.getAttribute('data-channel');
+            renderChannels();
+            renderMessages();
+        });
+    }
+}
+
 function renderMessages() {
-    const messagesEl = document.getElementById('chatMessages');
-    if (!messagesEl) return;
-    const messages = state.chat.messages[state.chat.activeChannel] || [];
-    if (messages.length === 0) { messagesEl.innerHTML = '<div class="no-data">No messages yet</div>'; return; }
-    messagesEl.innerHTML = messages.map(msg => `
-        <div class="message">
-            <div class="message-header">
-                <span class="message-user" style="color: ${ROLES[msg.role]?.color || '#888'}">${msg.user}</span>
-                <span class="message-time">${formatTime(msg.timestamp)}</span>
-            </div>
-            <div class="message-content">${msg.content}</div>
-        </div>
-    `).join('');
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    const messagesContainer = document.getElementById('messagesContainer');
+    if (!messagesContainer) return;
+    
+    var messages = state.chat.messages[state.chat.activeChannel] || [];
+    
+    if (messages.length === 0) {
+        messagesContainer.innerHTML = '<div class="no-messages">No messages yet</div>';
+        return;
+    }
+    
+    var html = '';
+    for (var i = 0; i < messages.length; i++) {
+        var msg = messages[i];
+        html += '<div class="message">';
+        html += '<div class="message-header">';
+        html += '<span class="message-user" style="color:' + getRoleColor(msg.role) + '">' + escapeHtml(msg.user) + '</span>';
+        html += '<span class="message-time">' + formatTime(msg.timestamp) + '</span>';
+        html += '</div>';
+        html += '<div class="message-content">' + escapeHtml(msg.content) + '</div>';
+        html += '</div>';
+    }
+    messagesContainer.innerHTML = html;
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function getRoleColor(role) {
+    var r = ROLES[role ? role.toUpperCase() : 'GUEST'];
+    return r ? r.color : '#888';
 }
 
 function sendChatMessage() {
-    if (!checkPermissionAndAlert('SEND_CHAT', 'send chat messages')) return;
-    if (state.settings.chatRestricted && state.currentUser.role.level < 3) {
-        showNotification('Chat Restricted', 'Chat is currently restricted to moderators and above', 'error');
-        return;
-    }
     const input = document.getElementById('chatInput');
-    const content = input.value.trim();
-    if (!content) return;
-    const message = {
+    var content = input ? input.value.trim() : '';
+    if (!content || !state.currentUser) return;
+    
+    var message = {
         id: Date.now(),
         user: state.currentUser.nickname || state.currentUser.name,
         role: state.currentUser.role.name,
         content: content,
         timestamp: new Date()
     };
+    
+    if (!state.chat.messages[state.chat.activeChannel]) {
+        state.chat.messages[state.chat.activeChannel] = [];
+    }
     state.chat.messages[state.chat.activeChannel].push(message);
+    
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
         state.ws.send(JSON.stringify({ type: 'chat', channel: state.chat.activeChannel, message: message }));
     }
-    input.value = '';
+    
+    if (input) input.value = '';
     renderMessages();
 }
 
+function handleChatKeypress(e) {
+    if (e.key === 'Enter') {
+        sendChatMessage();
+    }
+}
+
 function handleChatMessage(data) {
-    if (!state.chat.messages[data.channel]) state.chat.messages[data.channel] = [];
+    if (!state.chat.messages[data.channel]) {
+        state.chat.messages[data.channel] = [];
+    }
     state.chat.messages[data.channel].push(data.message);
-    if (data.channel === state.chat.activeChannel) renderMessages();
-    showNotification(`New message in ${data.channel}`, `${data.message.user}: ${data.message.content}`, 'info');
+    
+    if (data.channel === state.chat.activeChannel) {
+        renderMessages();
+    }
 }
 
 // ============================================
 // ALERTS
 // ============================================
 function handleAlert(data) {
-    state.notifications.unshift({ id: Date.now(), type: data.type || 'info', title: data.title, message: data.message, timestamp: new Date() });
-    showNotification(data.title, data.message, data.type);
-    updateNotificationBadge();
+    var alert = {
+        id: Date.now(),
+        type: data.type || 'warning',
+        title: data.title || 'Alert',
+        message: data.message || '',
+        timestamp: new Date(),
+        status: data.status || 'UNKNOWN'
+    };
+    
+    state.alerts.unshift(alert);
+    if (state.alerts.length > 20) state.alerts.pop();
+    
+    showNotification(alert.title, alert.message, alert.type === 'hazard' ? 'error' : 'warning');
+    updateAlertsList();
 }
 
-function showNotification(title, message, type = 'info') {
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `<strong>${title}</strong><p>${message}</p>`;
-    toast.style.cssText = `
-        position: fixed; bottom: 20px; right: 20px;
-        background: ${type === 'error' ? '#ff4444' : type === 'success' ? '#00ff88' : '#00d4ff'};
-        color: ${type === 'success' || type === 'info' ? '#1a1a2e' : 'white'};
-        padding: 15px 20px; border-radius: 8px; z-index: 10000; animation: slideIn 0.3s ease;
-    `;
+function updateAlertsList() {
+    const alertsList = document.getElementById('alertsList');
+    if (!alertsList) return;
+    
+    if (state.alerts.length === 0) {
+        alertsList.innerHTML = '<div class="no-data">No alerts</div>';
+        return;
+    }
+    
+    var html = '';
+    for (var i = 0; i < Math.min(state.alerts.length, 5); i++) {
+        var alert = state.alerts[i];
+        html += '<div class="alert-item ' + alert.type + '">';
+        html += '<div class="alert-header">';
+        html += '<span class="alert-title">' + escapeHtml(alert.title) + '</span>';
+        html += '<span class="alert-time">' + formatTime(alert.timestamp) + '</span>';
+        html += '</div>';
+        html += '<div class="alert-message">' + escapeHtml(alert.message) + '</div>';
+        html += '</div>';
+    }
+    alertsList.innerHTML = html;
+    
+    var hazardsEl = document.getElementById('hazardsDetected');
+    if (hazardsEl) {
+        hazardsEl.textContent = state.alerts.length;
+    }
+}
+
+function showNotification(title, message, type) {
+    type = type || 'info';
+    var toast = document.createElement('div');
+    toast.className = 'toast toast-' + type;
+    toast.innerHTML = '<strong>' + escapeHtml(title) + '</strong><p>' + escapeHtml(message) + '</p>';
+    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;background:' + 
+        (type === 'error' ? '#ff4444' : type === 'success' ? '#00ff88' : '#00d4ff') + 
+        ';color:' + (type === 'success' || type === 'info' ? '#1a1a2e' : 'white') + 
+        ';padding:15px 20px;border-radius:8px;z-index:10000;animation:slideIn 0.3s ease;max-width:300px;';
     document.body.appendChild(toast);
-    setTimeout(() => { toast.style.animation = 'slideOut 0.3s ease'; setTimeout(() => toast.remove(), 300); }, 3000);
-}
-
-function updateNotificationBadge() {
-    const badge = document.querySelector('.notif-badge');
-    if (badge) { badge.textContent = state.notifications.length; badge.style.display = state.notifications.length > 0 ? 'block' : 'none'; }
+    setTimeout(function() {
+        toast.style.animation = 'slideOut 0.3s ease';
+        setTimeout(function() { toast.remove(); }, 300);
+    }, 3000);
 }
 
 function toggleNotifications() {
-    const panel = document.getElementById('notificationPanel');
+    var panel = document.getElementById('notificationPanel');
     if (panel) panel.classList.toggle('show');
 }
 
+function clearNotifications() {
+    state.alerts = [];
+    updateAlertsList();
+    
+    var badge = document.getElementById('notifBadge');
+    if (badge) badge.style.display = 'none';
+}
+
 // ============================================
-// USER MANAGEMENT
+// USER PANEL
 // ============================================
 function updateUserPanel() {
-    const nameEl = document.querySelector('.user-name');
-    const roleEl = document.querySelector('.user-role');
-    if (nameEl) nameEl.textContent = state.currentUser.nickname || state.currentUser.name;
-    if (roleEl) roleEl.textContent = state.currentUser.role.name;
-}
-
-function handleUserJoined(data) { showNotification('User Joined', `${data.user.name} has joined`, 'info'); }
-function handleUserLeft(data) { showNotification('User Left', `${data.user.name} has left`, 'info'); }
-
-// ============================================
-// TEAM VIEW
-// ============================================
-function initTeamView() { renderTeamMembers(); renderPermissionsTable(); }
-
-function renderTeamMembers() {
-    const mainTeamEl = document.getElementById('mainTeamMembers');
-    const supportersEl = document.getElementById('supporterMembers');
-    if (mainTeamEl) mainTeamEl.innerHTML = TEAM_MEMBERS.main.map(member => createMemberCard(member)).join('');
-    if (supportersEl) supportersEl.innerHTML = TEAM_MEMBERS.supporters.map(member => createMemberCard(member)).join('');
-}
-
-function createMemberCard(member) {
-    const role = ROLES[member.role.toUpperCase()] || ROLES.SUPPORTER;
-    return `
-        <div class="team-card">
-            <div class="member-avatar"><i class="fas fa-user"></i></div>
-            <div class="member-info">
-                <div class="member-name">${member.name} <span style="color:#888;font-size:12px;">"${member.nickname}"</span></div>
-                <div class="member-role">${member.position}</div>
-            </div>
-            <span class="rank-badge ${member.role.toLowerCase()}">${role.name}</span>
-        </div>
-    `;
-}
-
-function renderPermissionsTable() {
-    const tableEl = document.getElementById('permissionsTable');
-    if (!tableEl) return;
-    const permissions = Object.keys(PERMISSIONS);
-    const roles = ['Admin', 'Moderator', 'Officer', 'Supporter'];
-    tableEl.innerHTML = `
-        <table>
-            <thead><tr><th>Permission</th>${roles.map(r => `<th>${r}</th>`).join('')}</tr></thead>
-            <tbody>
-                ${permissions.map(perm => `
-                    <tr>
-                        <td>${formatPermission(perm)}</td>
-                        ${roles.map(role => `<td class="${PERMISSIONS[perm].includes(role) ? 'text-success' : 'text-danger'}"><i class="fas ${PERMISSIONS[perm].includes(role) ? 'fa-check' : 'fa-times'}"></i></td>`).join('')}
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
-}
-
-function formatPermission(perm) { return perm.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()); }
-
-// ============================================
-// SETTINGS
-// ============================================
-function initSettings() {
-    const savedSettings = localStorage.getItem('stasis_settings');
-    if (savedSettings) state.settings = { ...state.settings, ...JSON.parse(savedSettings) };
-    const radiusSlider = document.getElementById('patrolRadiusSlider');
-    if (radiusSlider) {
-        radiusSlider.value = state.settings.patrolRadius;
-        document.getElementById('radiusValue').textContent = state.settings.patrolRadius + 'm';
+    var nameEl = document.querySelector('.user-name');
+    var roleEl = document.querySelector('.user-role');
+    var avatarEl = document.getElementById('userAvatar');
+    
+    if (nameEl && state.currentUser) {
+        nameEl.textContent = state.currentUser.nickname || state.currentUser.name;
     }
-    document.getElementById('streamEnabled').checked = state.settings.streamEnabled;
-    document.getElementById('notificationsEnabled').checked = state.settings.notificationsEnabled;
-    document.getElementById('chatRestricted').checked = state.settings.chatRestricted;
-    document.getElementById('autoReturnHome').checked = state.settings.autoReturnHome;
-}
-
-function saveSettings() {
-    if (!checkPermissionAndAlert('EDIT_SETTINGS', 'edit settings')) return;
-    state.settings.patrolRadius = parseInt(document.getElementById('patrolRadiusSlider').value);
-    state.settings.streamEnabled = document.getElementById('streamEnabled').checked;
-    state.settings.notificationsEnabled = document.getElementById('notificationsEnabled').checked;
-    state.settings.chatRestricted = document.getElementById('chatRestricted').checked;
-    state.settings.autoReturnHome = document.getElementById('autoReturnHome').checked;
-    localStorage.setItem('stasis_settings', JSON.stringify(state.settings));
-    showNotification('Settings Saved', 'Your settings have been saved', 'success');
-}
-
-// ============================================
-// ROVER CONTROLS
-// ============================================
-function startPatrol() { if (!checkPermissionAndAlert('START_PATROL', 'start patrol')) return; sendCommand('start_patrol'); }
-function stopPatrol() { if (!checkPermissionAndAlert('STOP_PATROL', 'stop patrol')) return; sendCommand('stop_patrol'); }
-function returnHome() { if (!checkPermissionAndAlert('RETURN_HOME', 'return rover home')) return; sendCommand('return_home'); }
-function emergencyStop() { sendCommand('emergency_stop'); showNotification('Emergency Stop', 'Rover has been stopped!', 'error'); }
-
-// ============================================
-// UTILITY FUNCTIONS
-// ============================================
-function formatTime(date) {
-    if (typeof date === 'string') date = new Date(date);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-// ============================================
-// CSS ANIMATIONS (injected)
-// ============================================
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-    @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
-    .message { margin-bottom: 10px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 5px; }
-    .message-header { display: flex; justify-content: space-between; margin-bottom: 5px; }
-    .message-time { font-size: 11px; color: #888; }
-    .message-content { font-size: 14px; }
-`;
-document.head.appendChild(style);
-
-// ============================================
-// CONFIGURATION
-// ============================================
-const CONFIG = {
-    API_URL: 'http://localhost:5000/api',
-    WS_URL: 'ws://localhost:5000/ws',
-    MAP_CENTER: [11.0168, 76.9558], // Default center (Coimbatore, India)
-    MAP_ZOOM: 15,
-    DEFAULT_PATROL_RADIUS: 250, // meters
-    MAX_PATROL_RADIUS: 1000, // meters
-    STREAM_URL: 'http://192.168.4.1:81/stream',
-    RECONNECT_INTERVAL: 5000
-};
-
-// ============================================
-// ROLES & PERMISSIONS
-// ============================================
-const ROLES = {
-    ADMIN: { id: 4, name: 'Admin', color: '#ff4444', level: 4 },
-    MODERATOR: { id: 3, name: 'Moderator', color: '#00d4ff', level: 3 },
-    OFFICER: { id: 2, name: 'Officer', color: '#00ff88', level: 2 },
-    SUPPORTER: { id: 1, name: 'Supporter', color: '#888888', level: 1 }
-};
-
-const PERMISSIONS = {
-    CONTROL_ROVER: ['Admin', 'Moderator'],
-    EDIT_FENCING: ['Admin', 'Moderator'],
-    VIEW_STREAM: ['Admin', 'Moderator', 'Officer'],
-    SEND_CHAT: ['Admin', 'Moderator', 'Officer', 'Supporter'],
-    VIEW_TELEMETRY: ['Admin', 'Moderator', 'Officer'],
-    MANAGE_USERS: ['Admin'],
-    EDIT_SETTINGS: ['Admin', 'Moderator'],
-    VIEW_ALERTS: ['Admin', 'Moderator', 'Officer'],
-    START_PATROL: ['Admin', 'Moderator'],
-    STOP_PATROL: ['Admin', 'Moderator'],
-    RETURN_HOME: ['Admin', 'Moderator']
-};
-
-// ============================================
-// TEAM MEMBERS WITH NICKNAMES
-// ============================================
-const TEAM_MEMBERS = {
-    main: [
-        { name: 'Kartik', nickname: 'Shadow', role: 'Admin', position: 'Leader and Initiative' },
-        { name: 'Harish', nickname: 'Phoenix', role: 'Moderator', position: 'Team Member' },
-        { name: 'Ryan Ahmed', nickname: 'Blaze', role: 'Officer', position: 'Team Member' },
-        { name: 'Mohaideen Ijaz', nickname: 'Storm', role: 'Officer', position: 'Team Member' },
-        { name: 'Swethen', nickname: 'Frost', role: 'Officer', position: 'Team Member' }
-    ],
-    supporters: [
-        { name: 'Stephen', nickname: 'Echo', role: 'Supporter', position: 'Team Member' },
-        { name: 'Krish', nickname: 'Nova', role: 'Supporter', position: 'Team Member' },
-        { name: 'Inba', nickname: 'Spark', role: 'Supporter', position: 'Team Member' },
-        { name: 'Baavasri', nickname: 'Viper', role: 'Supporter', position: 'Team Member' },
-        { name: 'Janane', nickname: 'Raven', role: 'Supporter', position: 'Team Member' }
-    ]
-};
-
-// ============================================
-// APPLICATION STATE
-// ============================================
-let state = {
-    currentUser: null,
-    rover: {
-        connected: false,
-        position: null,
-        battery: 0,
-        speed: 0,
-        heading: 0,
-        status: 'idle',
-        patrolMode: 'auto',
-        fencePoints: [],
-        homePosition: null
-    },
-    map: null,
-    fencingMap: null,
-    roverMarker: null,
-    fencePolygon: null,
-    fencePoints: [],
-    fencingMode: false,
-    ws: null,
-    chat: {
-        channels: [
-            { id: 'general', name: 'General', icon: 'fa-hashtag' },
-            { id: 'alerts', name: 'Alerts', icon: 'fa-exclamation-triangle' },
-            { id: 'patrol', name: 'Patrol Updates', icon: 'fa-route' }
-        ],
-        activeChannel: 'general',
-        messages: {}
-    },
-    settings: {
-        patrolRadius: CONFIG.DEFAULT_PATROL_RADIUS,
-        streamEnabled: true,
-        notificationsEnabled: true,
-        chatRestricted: false,
-        autoReturnHome: true,
-        reportEmails: []
-    },
-    notifications: []
-};
-
-// ============================================
-// INITIALIZATION
-// ============================================
-document.addEventListener('DOMContentLoaded', () => {
-    initApp();
-});
-
-function initApp() {
-    const savedUser = localStorage.getItem('stasis_user');
-    if (savedUser) {
-        state.currentUser = JSON.parse(savedUser);
-        showApp();
-    } else {
-        showLoginModal();
+    if (roleEl && state.currentUser) {
+        roleEl.textContent = state.currentUser.role.name;
     }
-    initEventListeners();
-}
-
-function initEventListeners() {
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.addEventListener('click', (e) => {
-            e.preventDefault();
-            const view = item.dataset.view;
-            if (view) switchView(view);
-        });
-    });
-    
-    document.getElementById('loginForm')?.addEventListener('submit', handleLogin);
-    document.getElementById('chatInput')?.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendChatMessage();
-    });
-    document.getElementById('sendChatBtn')?.addEventListener('click', sendChatMessage);
-    document.getElementById('saveSettingsBtn')?.addEventListener('click', saveSettings);
-    document.getElementById('notifBtn')?.addEventListener('click', toggleNotifications);
-    document.getElementById('logoutBtn')?.addEventListener('click', handleLogout);
-    document.getElementById('startFencingBtn')?.addEventListener('click', startFencingMode);
-    document.getElementById('clearFenceBtn')?.addEventListener('click', clearFence);
-    document.getElementById('saveFenceBtn')?.addEventListener('click', saveFence);
-    document.getElementById('patrolRadiusSlider')?.addEventListener('input', (e) => {
-        document.getElementById('radiusValue').textContent = e.target.value + 'm';
-        state.settings.patrolRadius = parseInt(e.target.value);
-    });
-}
-
-// ============================================
-// AUTHENTICATION
-// ============================================
-function showLoginModal() {
-    document.getElementById('loginModal')?.classList.remove('hidden');
-}
-
-function hideLoginModal() {
-    document.getElementById('loginModal')?.classList.add('hidden');
-}
-
-function handleLogin(e) {
-    e.preventDefault();
-    const email = document.getElementById('loginEmail').value;
-    const password = document.getElementById('loginPassword').value;
-    
-    let user = null;
-    let role = ROLES.SUPPORTER;
-    
-    for (const member of TEAM_MEMBERS.main) {
-        if (email.toLowerCase().includes(member.name.toLowerCase())) {
-            user = member;
-            role = ROLES[member.role.toUpperCase()] || ROLES.OFFICER;
-            break;
-        }
+    if (avatarEl && state.currentUser) {
+        var color = state.currentUser.role.color || '#666';
+        avatarEl.style.background = color;
     }
-    
-    if (!user) {
-        for (const member of TEAM_MEMBERS.supporters) {
-            if (email.toLowerCase().includes(member.name.toLowerCase())) {
-                user = member;
-                role = ROLES.SUPPORTER;
-                break;
-            }
-        }
-    }
-    
-    if (!user) {
-        user = { name: email.split('@')[0], nickname: 'Guest', role: 'Supporter', position: 'Guest' };
-        role = ROLES.SUPPORTER;
-    }
-    
-    state.currentUser = { ...user, email: email, role: role };
-    localStorage.setItem('stasis_user', JSON.stringify(state.currentUser));
-    hideLoginModal();
-    showApp();
-}
-
-function handleLogout() {
-    state.currentUser = null;
-    localStorage.removeItem('stasis_user');
-    disconnectWebSocket();
-    showLoginModal();
-}
-
-function showApp() {
-    updateUserPanel();
-    initMaps();
-    connectWebSocket();
-    initChat();
-    initSettings();
-    initTeamView();
-    startTelemetrySimulation();
-}
-
-// ============================================
-// PERMISSIONS
-// ============================================
-function hasPermission(permission) {
-    if (!state.currentUser) return false;
-    const allowedRoles = PERMISSIONS[permission];
-    if (!allowedRoles) return false;
-    return allowedRoles.includes(state.currentUser.role.name);
-}
-
-function checkPermissionAndAlert(permission, action) {
-    if (!hasPermission(permission)) {
-        showNotification('Permission Denied', `You don't have permission to ${action}`, 'error');
-        return false;
-    }
-    return true;
-}
-
-// ============================================
-// NAVIGATION
-// ============================================
-function switchView(viewName) {
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.classList.toggle('active', item.dataset.view === viewName);
-    });
-    document.querySelectorAll('.view').forEach(view => {
-        view.classList.toggle('active', view.id === `${viewName}View`);
-    });
-    if (viewName === 'map' && !state.map) setTimeout(() => initMainMap(), 100);
-    if (viewName === 'fencing' && !state.fencingMap) setTimeout(() => initFencingMap(), 100);
-}
-
-// ============================================
-// MAPS
-// ============================================
-function initMaps() {
-    setTimeout(() => initMiniMap(), 100);
-}
-
-function initMiniMap() {
-    const miniMapEl = document.getElementById('miniMap');
-    if (!miniMapEl || state.miniMap) return;
-    
-    state.miniMap = L.map('miniMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.miniMap);
-    
-    state.roverMarker = L.marker(CONFIG.MAP_CENTER, { icon: createRoverIcon() }).addTo(state.miniMap);
-}
-
-function initMainMap() {
-    const mainMapEl = document.getElementById('mainMap');
-    if (!mainMapEl || state.map) return;
-    
-    state.map = L.map('mainMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.map);
-    
-    if (!state.roverMarker) {
-        state.roverMarker = L.marker(state.rover.position || CONFIG.MAP_CENTER, { icon: createRoverIcon() }).addTo(state.map);
-    } else {
-        state.roverMarker.addTo(state.map);
-    }
-    
-    if (state.rover.homePosition) {
-        L.marker(state.rover.homePosition, { icon: createHomeIcon() }).addTo(state.map);
-    }
-    
-    if (state.rover.fencePoints.length > 2) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff', fillColor: '#00d4ff', fillOpacity: 0.2
-        }).addTo(state.map);
-    }
-}
-
-function initFencingMap() {
-    const fencingMapEl = document.getElementById('fencingMap');
-    if (!fencingMapEl || state.fencingMap) return;
-    
-    state.fencingMap = L.map('fencingMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.fencingMap);
-    
-    state.fencingMap.on('click', handleFenceMapClick);
-    
-    if (state.rover.fencePoints.length > 0) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff', fillColor: '#00d4ff', fillOpacity: 0.2
-        }).addTo(state.fencingMap);
-        state.fencePoints = state.rover.fencePoints.map(p => 
-            L.marker(p, { icon: createPointIcon() }).addTo(state.fencingMap)
-        );
-    }
-}
-
-function createRoverIcon() {
-    return L.divIcon({
-        className: 'rover-marker',
-        html: '<div style="background:#00d4ff;width:20px;height:20px;border-radius:50%;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.5);"></div>',
-        iconSize: [20, 20], iconAnchor: [10, 10]
-    });
-}
-
-function createHomeIcon() {
-    return L.divIcon({
-        className: 'home-marker',
-        html: '<div style="background:#00ff88;width:16px;height:16px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [16, 16], iconAnchor: [8, 8]
-    });
-}
-
-function createPointIcon() {
-    return L.divIcon({
-        className: 'fence-point',
-        html: '<div style="background:#ff4444;width:12px;height:12px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [12, 12], iconAnchor: [6, 6]
-    });
-}
-
-function updateRoverPosition(lat, lng) {
-    state.rover.position = [lat, lng];
-    if (state.roverMarker) state.roverMarker.setLatLng([lat, lng]);
-    if (state.miniMap) state.miniMap.panTo([lat, lng]);
-    if (state.map) state.map.panTo([lat, lng]);
-}
-
-// ============================================
-// FENCING
-// ============================================
-function startFencingMode() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'edit patrol fencing')) return;
-    state.fencingMode = true;
-    showNotification('Fencing Mode', 'Click on the map to add fence points', 'info');
-    if (state.fencingMap) state.fencingMap.getContainer().style.cursor = 'crosshair';
-}
-
-function handleFenceMapClick(e) {
-    if (!state.fencingMode) return;
-    const point = [e.latlng.lat, e.latlng.lng];
-    const marker = L.marker(point, { icon: createPointIcon() }).addTo(state.fencingMap);
-    state.fencePoints.push(marker);
-    updateFencePolygon();
-}
-
-function updateFencePolygon() {
-    if (state.fencePolygon) state.fencingMap.removeLayer(state.fencePolygon);
-    const points = state.fencePoints.map(m => m.getLatLng());
-    if (points.length > 2) {
-        state.fencePolygon = L.polygon(points, {
-            color: '#00d4ff', fillColor: '#00d4ff', fillOpacity: 0.2
-        }).addTo(state.fencingMap);
-    }
-    updateFencingInfo();
-}
-
-function updateFencingInfo() {
-    const points = state.fencePoints.length;
-    const area = state.fencePolygon ? calculatePolygonArea(state.fencePolygon) : 0;
-    document.getElementById('fencePointCount').textContent = points;
-    document.getElementById('fenceArea').textContent = area.toFixed(2) + ' m²';
-}
-
-function calculatePolygonArea(polygon) {
-    const latlngs = polygon.getLatLngs()[0];
-    let area = 0;
-    for (let i = 0; i < latlngs.length; i++) {
-        const j = (i + 1) % latlngs.length;
-        area += latlngs[i].lat * latlngs[j].lng;
-        area -= latlngs[j].lat * latlngs[i].lng;
-    }
-    return Math.abs(area / 2) * 111319.9 * 111319.9;
-}
-
-function clearFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'clear patrol fencing')) return;
-    state.fencePoints.forEach(m => state.fencingMap.removeLayer(m));
-    state.fencePoints = [];
-    if (state.fencePolygon) {
-        state.fencingMap.removeLayer(state.fencePolygon);
-        state.fencePolygon = null;
-    }
-    updateFencingInfo();
-    showNotification('Fence Cleared', 'Patrol fence has been cleared', 'success');
-}
-
-function saveFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'save patrol fencing')) return;
-    if (state.fencePoints.length < 3) {
-        showNotification('Invalid Fence', 'At least 3 points are required', 'error');
-        return;
-    }
-    state.rover.fencePoints = state.fencePoints.map(m => [m.getLatLng().lat, m.getLatLng().lng]);
-    sendCommand('set_fence', { points: state.rover.fencePoints });
-    showNotification('Fence Saved', 'Patrol fence has been saved and sent to rover', 'success');
-}
-
-// ============================================
-// WEBSOCKET CONNECTION
-// ============================================
-function connectWebSocket() {
-    if (state.ws) state.ws.close();
-    try {
-        state.ws = new WebSocket(CONFIG.WS_URL);
-        state.ws.onopen = () => {
-            console.log('WebSocket connected');
-            updateConnectionStatus(true);
-            state.ws.send(JSON.stringify({ type: 'auth', user: state.currentUser }));
-        };
-        state.ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            handleWebSocketMessage(data);
-        };
-        state.ws.onclose = () => {
-            console.log('WebSocket disconnected');
-            updateConnectionStatus(false);
-            setTimeout(connectWebSocket, CONFIG.RECONNECT_INTERVAL);
-        };
-        state.ws.onerror = (error) => console.error('WebSocket error:', error);
-    } catch (error) {
-        console.error('Failed to connect WebSocket:', error);
-        startTelemetrySimulation();
-    }
-}
-
-function disconnectWebSocket() {
-    if (state.ws) { state.ws.close(); state.ws = null; }
-}
-
-function handleWebSocketMessage(data) {
-    switch (data.type) {
-        case 'telemetry': handleTelemetry(data.payload); break;
-        case 'chat': handleChatMessage(data.payload); break;
-        case 'alert': handleAlert(data.payload); break;
-        case 'user_joined': handleUserJoined(data.payload); break;
-        case 'user_left': handleUserLeft(data.payload); break;
-    }
-}
-
-function sendCommand(command, params = {}) {
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({ type: 'command', command: command, params: params, user: state.currentUser }));
-    } else {
-        console.log('Command (simulated):', command, params);
-        simulateCommand(command, params);
-    }
-}
-
-// ============================================
-// TELEMETRY
-// ============================================
-function handleTelemetry(data) {
-    state.rover.battery = data.battery || state.rover.battery;
-    state.rover.speed = data.speed || state.rover.speed;
-    state.rover.heading = data.heading || state.rover.heading;
-    state.rover.status = data.status || state.rover.status;
-    if (data.gps) updateRoverPosition(data.gps.lat, data.gps.lng);
-    updateDashboard();
-}
-
-function updateDashboard() {
-    const batteryEl = document.getElementById('batteryLevel');
-    if (batteryEl) {
-        batteryEl.textContent = state.rover.battery + '%';
-        batteryEl.className = state.rover.battery < 20 ? 'text-danger' : state.rover.battery < 50 ? 'text-warning' : '';
-    }
-    const speedEl = document.getElementById('speedValue');
-    if (speedEl) speedEl.textContent = state.rover.speed.toFixed(1) + ' m/s';
-    const statusEl = document.getElementById('roverStatus');
-    if (statusEl) {
-        statusEl.textContent = state.rover.status.toUpperCase();
-        statusEl.className = state.rover.status === 'patrolling' ? 'text-success' : state.rover.status === 'returning' ? 'text-warning' : '';
-    }
-    const headingEl = document.getElementById('headingValue');
-    if (headingEl) headingEl.textContent = state.rover.heading + '°';
-}
-
-function updateConnectionStatus(connected) {
-    state.rover.connected = connected;
-    const statusDot = document.querySelector('.status-dot');
-    const statusText = document.querySelector('.connection-status span');
-    if (statusDot) statusDot.style.background = connected ? '#00ff88' : '#ff4444';
-    if (statusText) statusText.textContent = connected ? 'Connected' : 'Disconnected';
-}
-
-// ============================================
-// SIMULATION MODE
-// ============================================
-let simulationInterval = null;
-
-function startTelemetrySimulation() {
-    if (simulationInterval) return;
-    state.rover.position = CONFIG.MAP_CENTER;
-    state.rover.homePosition = CONFIG.MAP_CENTER;
-    state.rover.battery = 85;
-    state.rover.speed = 0;
-    state.rover.heading = 0;
-    state.rover.status = 'idle';
-    state.rover.connected = true;
-    updateConnectionStatus(true);
-    updateDashboard();
-    
-    simulationInterval = setInterval(() => {
-        if (state.rover.status === 'patrolling') {
-            const lat = state.rover.position[0] + (Math.random() - 0.5) * 0.0005;
-            const lng = state.rover.position[1] + (Math.random() - 0.5) * 0.0005;
-            updateRoverPosition(lat, lng);
-            state.rover.speed = 0.5 + Math.random() * 1.5;
-            state.rover.heading = Math.floor(Math.random() * 360);
-        }
-        if (state.rover.status !== 'idle' && state.rover.status !== 'charging') {
-            state.rover.battery = Math.max(0, state.rover.battery - 0.01);
-        }
-        updateDashboard();
-    }, 1000);
-}
-
-function simulateCommand(command, params) {
-    switch (command) {
-        case 'start_patrol':
-            state.rover.status = 'patrolling';
-            showNotification('Patrol Started', 'Rover is now patrolling', 'success');
-            break;
-        case 'stop_patrol':
-            state.rover.status = 'idle';
-            state.rover.speed = 0;
-            showNotification('Patrol Stopped', 'Rover has stopped', 'info');
-            break;
-        case 'return_home':
-            state.rover.status = 'returning';
-            showNotification('Returning Home', 'Rover is returning to base', 'info');
-            setTimeout(() => {
-                state.rover.status = 'idle';
-                state.rover.position = state.rover.homePosition;
-                updateRoverPosition(state.rover.homePosition[0], state.rover.homePosition[1]);
-                showNotification('Home Reached', 'Rover has returned to base', 'success');
-            }, 5000);
-            break;
-        case 'set_fence':
-            state.rover.fencePoints = params.points;
-            showNotification('Fence Updated', 'Patrol fence has been updated', 'success');
-            break;
-    }
-    updateDashboard();
-}
-
-// ============================================
-// CHAT
-// ============================================
-function initChat() {
-    state.chat.channels.forEach(channel => { state.chat.messages[channel.id] = []; });
-    state.chat.messages.general.push({
-        id: Date.now(), user: 'System', role: 'Admin',
-        content: 'Welcome to Stasis Sentinel Chat!', timestamp: new Date()
-    });
-    renderChannels();
-    renderMessages();
-}
-
-function renderChannels() {
-    const channelsEl = document.getElementById('chatChannels');
-    if (!channelsEl) return;
-    channelsEl.innerHTML = state.chat.channels.map(channel => `
-        <div class="channel ${channel.id === state.chat.activeChannel ? 'active' : ''}" data-channel="${channel.id}">
-            <i class="fas ${channel.icon}"></i><span>${channel.name}</span>
-        </div>
-    `).join('');
-    channelsEl.querySelectorAll('.channel').forEach(el => {
-        el.addEventListener('click', () => {
-            state.chat.activeChannel = el.dataset.channel;
-            renderChannels();
-            renderMessages();
-        });
-    });
-}
-
-function renderMessages() {
-    const messagesEl = document.getElementById('chatMessages');
-    if (!messagesEl) return;
-    const messages = state.chat.messages[state.chat.activeChannel] || [];
-    if (messages.length === 0) { messagesEl.innerHTML = '<div class="no-data">No messages yet</div>'; return; }
-    messagesEl.innerHTML = messages.map(msg => `
-        <div class="message">
-            <div class="message-header">
-                <span class="message-user" style="color: ${ROLES[msg.role]?.color || '#888'}">${msg.user}</span>
-                <span class="message-time">${formatTime(msg.timestamp)}</span>
-            </div>
-            <div class="message-content">${msg.content}</div>
-        </div>
-    `).join('');
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-}
-
-function sendChatMessage() {
-    if (!checkPermissionAndAlert('SEND_CHAT', 'send chat messages')) return;
-    if (state.settings.chatRestricted && state.currentUser.role.level < 3) {
-        showNotification('Chat Restricted', 'Chat is currently restricted to moderators and above', 'error');
-        return;
-    }
-    const input = document.getElementById('chatInput');
-    const content = input.value.trim();
-    if (!content) return;
-    const message = {
-        id: Date.now(),
-        user: state.currentUser.nickname || state.currentUser.name,
-        role: state.currentUser.role.name,
-        content: content,
-        timestamp: new Date()
-    };
-    state.chat.messages[state.chat.activeChannel].push(message);
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({ type: 'chat', channel: state.chat.activeChannel, message: message }));
-    }
-    input.value = '';
-    renderMessages();
-}
-
-function handleChatMessage(data) {
-    if (!state.chat.messages[data.channel]) state.chat.messages[data.channel] = [];
-    state.chat.messages[data.channel].push(data.message);
-    if (data.channel === state.chat.activeChannel) renderMessages();
-    showNotification(`New message in ${data.channel}`, `${data.message.user}: ${data.message.content}`, 'info');
-}
-
-// ============================================
-// ALERTS
-// ============================================
-function handleAlert(data) {
-    state.notifications.unshift({ id: Date.now(), type: data.type || 'info', title: data.title, message: data.message, timestamp: new Date() });
-    showNotification(data.title, data.message, data.type);
-    updateNotificationBadge();
-}
-
-function showNotification(title, message, type = 'info') {
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `<strong>${title}</strong><p>${message}</p>`;
-    toast.style.cssText = `
-        position: fixed; bottom: 20px; right: 20px;
-        background: ${type === 'error' ? '#ff4444' : type === 'success' ? '#00ff88' : '#00d4ff'};
-        color: ${type === 'success' || type === 'info' ? '#1a1a2e' : 'white'};
-        padding: 15px 20px; border-radius: 8px; z-index: 10000; animation: slideIn 0.3s ease;
-    `;
-    document.body.appendChild(toast);
-    setTimeout(() => { toast.style.animation = 'slideOut 0.3s ease'; setTimeout(() => toast.remove(), 300); }, 3000);
-}
-
-function updateNotificationBadge() {
-    const badge = document.querySelector('.notif-badge');
-    if (badge) { badge.textContent = state.notifications.length; badge.style.display = state.notifications.length > 0 ? 'block' : 'none'; }
-}
-
-function toggleNotifications() {
-    const panel = document.getElementById('notificationPanel');
-    if (panel) panel.classList.toggle('show');
-}
-
-// ============================================
-// USER MANAGEMENT
-// ============================================
-function updateUserPanel() {
-    const nameEl = document.querySelector('.user-name');
-    const roleEl = document.querySelector('.user-role');
-    if (nameEl) nameEl.textContent = state.currentUser.nickname || state.currentUser.name;
-    if (roleEl) roleEl.textContent = state.currentUser.role.name;
-}
-
-function handleUserJoined(data) { showNotification('User Joined', `${data.user.name} has joined`, 'info'); }
-function handleUserLeft(data) { showNotification('User Left', `${data.user.name} has left`, 'info'); }
-
-// ============================================
-// TEAM VIEW
-// ============================================
-function initTeamView() { renderTeamMembers(); renderPermissionsTable(); }
-
-function renderTeamMembers() {
-    const mainTeamEl = document.getElementById('mainTeamMembers');
-    const supportersEl = document.getElementById('supporterMembers');
-    if (mainTeamEl) mainTeamEl.innerHTML = TEAM_MEMBERS.main.map(member => createMemberCard(member)).join('');
-    if (supportersEl) supportersEl.innerHTML = TEAM_MEMBERS.supporters.map(member => createMemberCard(member)).join('');
-}
-
-function createMemberCard(member) {
-    const role = ROLES[member.role.toUpperCase()] || ROLES.SUPPORTER;
-    return `
-        <div class="team-card">
-            <div class="member-avatar"><i class="fas fa-user"></i></div>
-            <div class="member-info">
-                <div class="member-name">${member.name} <span style="color:#888;font-size:12px;">"${member.nickname}"</span></div>
-                <div class="member-role">${member.position}</div>
-            </div>
-            <span class="rank-badge ${member.role.toLowerCase()}">${role.name}</span>
-        </div>
-    `;
-}
-
-function renderPermissionsTable() {
-    const tableEl = document.getElementById('permissionsTable');
-    if (!tableEl) return;
-    const permissions = Object.keys(PERMISSIONS);
-    const roles = ['Admin', 'Moderator', 'Officer', 'Supporter'];
-    tableEl.innerHTML = `
-        <table>
-            <thead><tr><th>Permission</th>${roles.map(r => `<th>${r}</th>`).join('')}</tr></thead>
-            <tbody>
-                ${permissions.map(perm => `
-                    <tr>
-                        <td>${formatPermission(perm)}</td>
-                        ${roles.map(role => `<td class="${PERMISSIONS[perm].includes(role) ? 'text-success' : 'text-danger'}"><i class="fas ${PERMISSIONS[perm].includes(role) ? 'fa-check' : 'fa-times'}"></i></td>`).join('')}
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
-}
-
-function formatPermission(perm) { return perm.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()); }
-
-// ============================================
-// SETTINGS
-// ============================================
-function initSettings() {
-    const savedSettings = localStorage.getItem('stasis_settings');
-    if (savedSettings) state.settings = { ...state.settings, ...JSON.parse(savedSettings) };
-    const radiusSlider = document.getElementById('patrolRadiusSlider');
-    if (radiusSlider) {
-        radiusSlider.value = state.settings.patrolRadius;
-        document.getElementById('radiusValue').textContent = state.settings.patrolRadius + 'm';
-    }
-    document.getElementById('streamEnabled').checked = state.settings.streamEnabled;
-    document.getElementById('notificationsEnabled').checked = state.settings.notificationsEnabled;
-    document.getElementById('chatRestricted').checked = state.settings.chatRestricted;
-    document.getElementById('autoReturnHome').checked = state.settings.autoReturnHome;
-}
-
-function saveSettings() {
-    if (!checkPermissionAndAlert('EDIT_SETTINGS', 'edit settings')) return;
-    state.settings.patrolRadius = parseInt(document.getElementById('patrolRadiusSlider').value);
-    state.settings.streamEnabled = document.getElementById('streamEnabled').checked;
-    state.settings.notificationsEnabled = document.getElementById('notificationsEnabled').checked;
-    state.settings.chatRestricted = document.getElementById('chatRestricted').checked;
-    state.settings.autoReturnHome = document.getElementById('autoReturnHome').checked;
-    localStorage.setItem('stasis_settings', JSON.stringify(state.settings));
-    showNotification('Settings Saved', 'Your settings have been saved', 'success');
-}
-
-// ============================================
-// ROVER CONTROLS
-// ============================================
-function startPatrol() { if (!checkPermissionAndAlert('START_PATROL', 'start patrol')) return; sendCommand('start_patrol'); }
-function stopPatrol() { if (!checkPermissionAndAlert('STOP_PATROL', 'stop patrol')) return; sendCommand('stop_patrol'); }
-function returnHome() { if (!checkPermissionAndAlert('RETURN_HOME', 'return rover home')) return; sendCommand('return_home'); }
-function emergencyStop() { sendCommand('emergency_stop'); showNotification('Emergency Stop', 'Rover has been stopped!', 'error'); }
-
-// ============================================
-// UTILITY FUNCTIONS
-// ============================================
-function formatTime(date) {
-    if (typeof date === 'string') date = new Date(date);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-// ============================================
-// CSS ANIMATIONS (injected)
-// ============================================
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-    @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
-    .message { margin-bottom: 10px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 5px; }
-    .message-header { display: flex; justify-content: space-between; margin-bottom: 5px; }
-    .message-time { font-size: 11px; color: #888; }
-    .message-content { font-size: 14px; }
-`;
-document.head.appendChild(style);
-
-                <span class="message-time">${formatTime(msg.timestamp)}</span>
-            </div>
-            <div class="message-content">${msg.content}</div>
-        </div>
-    `).join('');
-    
-    // Scroll to bottom
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-}
-
-function sendChatMessage() {
-    if (!checkPermissionAndAlert('SEND_CHAT', 'send chat messages')) return;
-    if (state.settings.chatRestricted && state.currentUser.role.level < 3) {
-        showNotification('Chat Restricted', 'Chat is currently restricted to moderators and above', 'error');
-        return;
-    }
-    
-    const input = document.getElementById('chatInput');
-    const content = input.value.trim();
-    
-    if (!content) return;
-    
-    const message = {
-        id: Date.now(),
-        user: state.currentUser.name,
-        role: state.currentUser.role.name,
-        content: content,
-        timestamp: new Date()
-    };
-    
-    // Add to local messages
-    state.chat.messages[state.chat.activeChannel].push(message);
-    
-    // Send via WebSocket
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({
-            type: 'chat',
-            channel: state.chat.activeChannel,
-            message: message
-        }));
-    }
-    
-    input.value = '';
-    renderMessages();
-}
-
-function handleChatMessage(data) {
-    if (!state.chat.messages[data.channel]) {
-        state.chat.messages[data.channel] = [];
-    }
-    
-    state.chat.messages[data.channel].push(data.message);
-    
-    if (data.channel === state.chat.activeChannel) {
-        renderMessages();
-    }
-    
-    // Show notification if not in chat view
-    showNotification(`New message in ${data.channel}`, `${data.message.user}: ${data.message.content}`, 'info');
-}
-
-// ============================================
-// ALERTS
-// ============================================
-function handleAlert(data) {
-    state.notifications.unshift({
-        id: Date.now(),
-        type: data.type || 'info',
-        title: data.title,
-        message: data.message,
-        timestamp: new Date()
-    });
-    
-    showNotification(data.title, data.message, data.type);
-    updateNotificationBadge();
-}
-
-function showNotification(title, message, type = 'info') {
-    // Create toast notification
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `
-        <strong>${title}</strong>
-        <p>${message}</p>
-    `;
-    
-    toast.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: ${type === 'error' ? '#ff4444' : type === 'success' ? '#00ff88' : '#00d4ff'};
-        color: ${type === 'success' || type === 'info' ? '#1a1a2e' : 'white'};
-        padding: 15px 20px;
-        border-radius: 8px;
-        z-index: 10000;
-        animation: slideIn 0.3s ease;
-    `;
-    
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.animation = 'slideOut 0.3s ease';
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
-}
-
-function updateNotificationBadge() {
-    const badge = document.querySelector('.notif-badge');
-    if (badge) {
-        badge.textContent = state.notifications.length;
-        badge.style.display = state.notifications.length > 0 ? 'block' : 'none';
-    }
-}
-
-function toggleNotifications() {
-    const panel = document.getElementById('notificationPanel');
-    if (panel) {
-        panel.classList.toggle('show');
-    }
-}
-
-// ============================================
-// USER MANAGEMENT
-// ============================================
-function updateUserPanel() {
-    const nameEl = document.querySelector('.user-name');
-    const roleEl = document.querySelector('.user-role');
-    
-    if (nameEl) nameEl.textContent = state.currentUser.name;
-    if (roleEl) roleEl.textContent = state.currentUser.role.name;
-}
-
-function handleUserJoined(data) {
-    showNotification('User Joined', `${data.user.name} has joined`, 'info');
-}
-
-function handleUserLeft(data) {
-    showNotification('User Left', `${data.user.name} has left`, 'info');
 }
 
 // ============================================
@@ -1725,1221 +980,140 @@ function initTeamView() {
 }
 
 function renderTeamMembers() {
-    const mainTeamEl = document.getElementById('mainTeamMembers');
-    const supportersEl = document.getElementById('supporterMembers');
+    var mainTeamGrid = document.getElementById('mainTeamGrid');
+    var supportersGrid = document.getElementById('supportersGrid');
     
-    if (mainTeamEl) {
-        mainTeamEl.innerHTML = TEAM_MEMBERS.main.map(member => createMemberCard(member)).join('');
+    if (mainTeamGrid) {
+        var html = '';
+        for (var i = 0; i < TEAM_MEMBERS.main.length; i++) {
+            var member = TEAM_MEMBERS.main[i];
+            var role = ROLES[member.role.toUpperCase()] || ROLES.SUPPORTER;
+            html += '<div class="team-card">';
+            html += '<div class="member-avatar"><i class="fas fa-user"></i></div>';
+            html += '<div class="member-info">';
+            html += '<span class="member-name">' + member.name + ' <span class="nickname">(' + member.nickname + ')</span></span>';
+            html += '<span class="member-role">' + member.position + '</span>';
+            html += '</div>';
+            html += '<span class="rank-badge ' + member.role.toLowerCase() + '">' + role.name + '</span>';
+            html += '</div>';
+        }
+        mainTeamGrid.innerHTML = html;
     }
-    
-    if (supportersEl) {
-        supportersEl.innerHTML = TEAM_MEMBERS.supporters.map(member => createMemberCard(member)).join('');
+    if (supportersGrid) {
+        var html = '';
+        for (var i = 0; i < TEAM_MEMBERS.supporters.length; i++) {
+            var member = TEAM_MEMBERS.supporters[i];
+            var role = ROLES[member.role.toUpperCase()] || ROLES.SUPPORTER;
+            html += '<div class="team-card">';
+            html += '<div class="member-avatar"><i class="fas fa-user"></i></div>';
+            html += '<div class="member-info">';
+            html += '<span class="member-name">' + member.name + ' <span class="nickname">(' + member.nickname + ')</span></span>';
+            html += '<span class="member-role">' + member.position + '</span>';
+            html += '</div>';
+            html += '<span class="rank-badge ' + member.role.toLowerCase() + '">' + role.name + '</span>';
+            html += '</div>';
+        }
+        supportersGrid.innerHTML = html;
     }
-}
-
-function createMemberCard(member) {
-    const role = ROLES[member.role.toUpperCase()] || ROLES.SUPPORTER;
-    return `
-        <div class="team-card">
-            <div class="member-avatar">
-                <i class="fas fa-user"></i>
-            </div>
-            <div class="member-info">
-                <div class="member-name">${member.name}</div>
-                <div class="member-role">${member.position}</div>
-            </div>
-            <span class="rank-badge ${member.role.toLowerCase()}">${role.name}</span>
-        </div>
-    `;
 }
 
 function renderPermissionsTable() {
-    const tableEl = document.getElementById('permissionsTable');
-    if (!tableEl) return;
+    var permissionsTable = document.querySelector('.permissions-table table');
+    if (!permissionsTable) return;
     
-    const permissions = Object.keys(PERMISSIONS);
-    const roles = ['Admin', 'Moderator', 'Officer', 'Supporter'];
+    var roles = ['Admin', 'Moderator', 'Officer', 'Supporter', 'Guest'];
+    var permissions = Object.keys(PERMISSIONS);
     
-    tableEl.innerHTML = `
-        <table>
-            <thead>
-                <tr>
-                    <th>Permission</th>
-                    ${roles.map(r => `<th>${r}</th>`).join('')}
-                </tr>
-            </thead>
-            <tbody>
-                ${permissions.map(perm => `
-                    <tr>
-                        <td>${formatPermission(perm)}</td>
-                        ${roles.map(role => `
-                            <td class="${PERMISSIONS[perm].includes(role) ? 'text-success' : 'text-danger'}">
-                                <i class="fas ${PERMISSIONS[perm].includes(role) ? 'fa-check' : 'fa-times'}"></i>
-                            </td>
-                        `).join('')}
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
+    var tbody = permissionsTable.querySelector('tbody');
+    if (tbody) {
+        var html = '';
+        for (var i = 0; i < permissions.length; i++) {
+            var perm = permissions[i];
+            html += '<tr><td>' + formatPermission(perm) + '</td>';
+            for (var j = 0; j < roles.length; j++) {
+                var role = roles[j];
+                var hasPerm = PERMISSIONS[perm].indexOf(role) !== -1;
+                html += '<td class="' + (hasPerm ? 'text-success' : 'text-danger') + '">';
+                html += '<i class="fas ' + (hasPerm ? 'fa-check' : 'fa-times') + '"></i></td>';
+            }
+            html += '</tr>';
+        }
+        tbody.innerHTML = html;
+    }
 }
 
 function formatPermission(perm) {
-    return perm.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    return perm.replace(/_/g, ' ').replace(/\b\w/g, function(l) { return l.toUpperCase(); });
 }
 
 // ============================================
 // SETTINGS
 // ============================================
 function initSettings() {
-    // Load saved settings
-    const savedSettings = localStorage.getItem('stasis_settings');
+    var savedSettings = localStorage.getItem('stasis_settings');
     if (savedSettings) {
-        state.settings = { ...state.settings, ...JSON.parse(savedSettings) };
+        try {
+            state.settings = Object.assign({}, state.settings, JSON.parse(savedSettings));
+        } catch (e) {}
     }
     
-    // Update UI
-    const radiusSlider = document.getElementById('patrolRadiusSlider');
+    var radiusSlider = document.getElementById('patrolRadius');
     if (radiusSlider) {
         radiusSlider.value = state.settings.patrolRadius;
-        document.getElementById('radiusValue').textContent = state.settings.patrolRadius + 'm';
+        updateRadiusDisplay();
     }
-    
-    // Checkboxes
-    document.getElementById('streamEnabled').checked = state.settings.streamEnabled;
-    document.getElementById('notificationsEnabled').checked = state.settings.notificationsEnabled;
-    document.getElementById('chatRestricted').checked = state.settings.chatRestricted;
-    document.getElementById('autoReturnHome').checked = state.settings.autoReturnHome;
 }
 
 function saveSettings() {
-    if (!checkPermissionAndAlert('EDIT_SETTINGS', 'edit settings')) return;
+    var radiusSlider = document.getElementById('patrolRadius');
+    if (radiusSlider) {
+        state.settings.patrolRadius = parseInt(radiusSlider.value);
+    }
     
-    // Get values from form
-    state.settings.patrolRadius = parseInt(document.getElementById('patrolRadiusSlider').value);
-    state.settings.streamEnabled = document.getElementById('streamEnabled').checked;
-    state.settings.notificationsEnabled = document.getElementById('notificationsEnabled').checked;
-    state.settings.chatRestricted = document.getElementById('chatRestricted').checked;
-    state.settings.autoReturnHome = document.getElementById('autoReturnHome').checked;
-    
-    // Save to localStorage
     localStorage.setItem('stasis_settings', JSON.stringify(state.settings));
-    
     showNotification('Settings Saved', 'Your settings have been saved', 'success');
 }
 
-// ============================================
-// ROVER CONTROLS
-// ============================================
-function startPatrol() {
-    if (!checkPermissionAndAlert('START_PATROL', 'start patrol')) return;
-    sendCommand('start_patrol');
-}
-
-function stopPatrol() {
-    if (!checkPermissionAndAlert('STOP_PATROL', 'stop patrol')) return;
-    sendCommand('stop_patrol');
-}
-
-function returnHome() {
-    if (!checkPermissionAndAlert('RETURN_HOME', 'return rover home')) return;
-    sendCommand('return_home');
-}
-
-function emergencyStop() {
-    sendCommand('emergency_stop');
-    showNotification('Emergency Stop', 'Rover has been stopped!', 'error');
-}
-
-// ============================================
-// UTILITY FUNCTIONS
-// ============================================
-function formatTime(date) {
-    if (typeof date === 'string') date = new Date(date);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-// ============================================
-// CSS ANIMATIONS (injected)
-// ============================================
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideIn {
-        from { transform: translateX(100%); opacity: 0; }
-        to { transform: translateX(0); opacity: 1; }
-    }
-    @keyframes slideOut {
-        from { transform: translateX(0); opacity: 1; }
-        to { transform: translateX(100%); opacity: 0; }
-    }
-    .message { margin-bottom: 10px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 5px; }
-    .message-header { display: flex; justify-content: space-between; margin-bottom: 5px; }
-    .message-time { font-size: 11px; color: #888; }
-    .message-content { font-size: 14px; }
-`;
-document.head.appendChild(style);
-
-// ============================================
-// CONFIGURATION
-// ============================================
-const CONFIG = {
-    API_URL: 'http://localhost:5000/api',
-    WS_URL: 'ws://localhost:5000/ws',
-    MAP_CENTER: [11.0168, 76.9558], // Default center (Coimbatore, India)
-    MAP_ZOOM: 15,
-    DEFAULT_PATROL_RADIUS: 250, // meters
-    MAX_PATROL_RADIUS: 1000, // meters
-    STREAM_URL: 'http://192.168.4.1:81/stream',
-    RECONNECT_INTERVAL: 5000
-};
-
-// ============================================
-// ROLES & PERMISSIONS
-// ============================================
-const ROLES = {
-    ADMIN: { id: 4, name: 'Admin', color: '#ff4444', level: 4 },
-    MODERATOR: { id: 3, name: 'Moderator', color: '#00d4ff', level: 3 },
-    OFFICER: { id: 2, name: 'Officer', color: '#00ff88', level: 2 },
-    SUPPORTER: { id: 1, name: 'Supporter', color: '#888888', level: 1 }
-};
-
-const PERMISSIONS = {
-    CONTROL_ROVER: ['Admin', 'Moderator'],
-    EDIT_FENCING: ['Admin', 'Moderator'],
-    VIEW_STREAM: ['Admin', 'Moderator', 'Officer'],
-    SEND_CHAT: ['Admin', 'Moderator', 'Officer', 'Supporter'],
-    VIEW_TELEMETRY: ['Admin', 'Moderator', 'Officer'],
-    MANAGE_USERS: ['Admin'],
-    EDIT_SETTINGS: ['Admin', 'Moderator'],
-    VIEW_ALERTS: ['Admin', 'Moderator', 'Officer'],
-    START_PATROL: ['Admin', 'Moderator'],
-    STOP_PATROL: ['Admin', 'Moderator'],
-    RETURN_HOME: ['Admin', 'Moderator']
-};
-
-// ============================================
-// TEAM MEMBERS
-// ============================================
-const TEAM_MEMBERS = {
-    main: [
-        { name: 'Kartik', nickname: 'Shadow', role: 'Admin', position: 'Leader and Initiative' },
-        { name: 'Harish', nickname: 'Phoenix', role: 'Moderator', position: 'Team Member' },
-        { name: 'Ryan Ahmed', nickname: 'Blaze', role: 'Officer', position: 'Team Member' },
-        { name: 'Mohaideen Ijaz', nickname: 'Storm', role: 'Officer', position: 'Team Member' },
-        { name: 'Swethen', nickname: 'Frost', role: 'Officer', position: 'Team Member' }
-    ],
-    supporters: [
-        { name: 'Stephen', nickname: 'Echo', role: 'Supporter', position: 'Team Member' },
-        { name: 'Krish', nickname: 'Nova', role: 'Supporter', position: 'Team Member' },
-        { name: 'Inba', nickname: 'Spark', role: 'Supporter', position: 'Team Member' },
-        { name: 'Baavasri', nickname: 'Viper', role: 'Supporter', position: 'Team Member' },
-        { name: 'Janane', nickname: 'Raven', role: 'Supporter', position: 'Team Member' }
-    ]
-};
-
-// ============================================
-// APPLICATION STATE
-// ============================================
-let state = {
-    currentUser: null,
-    rover: {
-        connected: false,
-        position: null,
-        battery: 0,
-        speed: 0,
-        heading: 0,
-        status: 'idle',
-        patrolMode: 'auto',
-        fencePoints: [],
-        homePosition: null
-    },
-    map: null,
-    fencingMap: null,
-    roverMarker: null,
-    fencePolygon: null,
-    fencePoints: [],
-    fencingMode: false,
-    ws: null,
-    chat: {
-        channels: [
-            { id: 'general', name: 'General', icon: 'fa-hashtag' },
-            { id: 'alerts', name: 'Alerts', icon: 'fa-exclamation-triangle' },
-            { id: 'patrol', name: 'Patrol Updates', icon: 'fa-route' }
-        ],
-        activeChannel: 'general',
-        messages: {}
-    },
-    settings: {
+function resetSettings() {
+    state.settings = {
         patrolRadius: CONFIG.DEFAULT_PATROL_RADIUS,
         streamEnabled: true,
         notificationsEnabled: true,
-        chatRestricted: false,
-        autoReturnHome: true,
-        reportEmails: []
-    },
-    notifications: []
-};
-
-// ============================================
-// INITIALIZATION
-// ============================================
-document.addEventListener('DOMContentLoaded', () => {
-    initApp();
-});
-
-function initApp() {
-    // Check for saved session
-    const savedUser = localStorage.getItem('stasis_user');
-    if (savedUser) {
-        state.currentUser = JSON.parse(savedUser);
-        showApp();
-    } else {
-        showLoginModal();
-    }
-    
-    // Initialize event listeners
-    initEventListeners();
-}
-
-function initEventListeners() {
-    // Navigation
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.addEventListener('click', (e) => {
-            e.preventDefault();
-            const view = item.dataset.view;
-            if (view) switchView(view);
-        });
-    });
-    
-    // Login form
-    document.getElementById('loginForm')?.addEventListener('submit', handleLogin);
-    
-    // Chat
-    document.getElementById('chatInput')?.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendChatMessage();
-    });
-    
-    document.getElementById('sendChatBtn')?.addEventListener('click', sendChatMessage);
-    
-    // Settings
-    document.getElementById('saveSettingsBtn')?.addEventListener('click', saveSettings);
-    
-    // Notifications
-    document.getElementById('notifBtn')?.addEventListener('click', toggleNotifications);
-    
-    // Logout
-    document.getElementById('logoutBtn')?.addEventListener('click', handleLogout);
-    
-    // Fencing controls
-    document.getElementById('startFencingBtn')?.addEventListener('click', startFencingMode);
-    document.getElementById('clearFenceBtn')?.addEventListener('click', clearFence);
-    document.getElementById('saveFenceBtn')?.addEventListener('click', saveFence);
-    
-    // Patrol radius slider
-    document.getElementById('patrolRadiusSlider')?.addEventListener('input', (e) => {
-        document.getElementById('radiusValue').textContent = e.target.value + 'm';
-        state.settings.patrolRadius = parseInt(e.target.value);
-    });
-}
-
-// ============================================
-// AUTHENTICATION
-// ============================================
-function showLoginModal() {
-    document.getElementById('loginModal')?.classList.remove('hidden');
-}
-
-function hideLoginModal() {
-    document.getElementById('loginModal')?.classList.add('hidden');
-}
-
-function handleLogin(e) {
-    e.preventDefault();
-    
-    const email = document.getElementById('loginEmail').value;
-    const password = document.getElementById('loginPassword').value;
-    
-    // Find user in team members
-    let user = null;
-    let role = ROLES.SUPPORTER;
-    
-    // Check main team
-    for (const member of TEAM_MEMBERS.main) {
-        if (email.toLowerCase().includes(member.name.toLowerCase())) {
-            user = member;
-            role = ROLES[member.role.toUpperCase()] || ROLES.OFFICER;
-            break;
-        }
-    }
-    
-    // Check supporters if not found in main
-    if (!user) {
-        for (const member of TEAM_MEMBERS.supporters) {
-            if (email.toLowerCase().includes(member.name.toLowerCase())) {
-                user = member;
-                role = ROLES.SUPPORTER;
-                break;
-            }
-        }
-    }
-    
-    // Demo mode - allow any email
-    if (!user) {
-        user = { name: email.split('@')[0], role: 'Supporter', position: 'Guest' };
-        role = ROLES.SUPPORTER;
-    }
-    
-    state.currentUser = {
-        ...user,
-        email: email,
-        role: role
+        autoReturnHome: true
     };
-    
-    localStorage.setItem('stasis_user', JSON.stringify(state.currentUser));
-    hideLoginModal();
-    showApp();
-}
-
-function handleLogout() {
-    state.currentUser = null;
-    localStorage.removeItem('stasis_user');
-    disconnectWebSocket();
-    showLoginModal();
-}
-
-function showApp() {
-    updateUserPanel();
-    initMaps();
-    connectWebSocket();
-    initChat();
+    localStorage.removeItem('stasis_settings');
     initSettings();
-    initTeamView();
-    startTelemetrySimulation();
-}
-
-// ============================================
-// PERMISSIONS
-// ============================================
-function hasPermission(permission) {
-    if (!state.currentUser) return false;
-    
-    const allowedRoles = PERMISSIONS[permission];
-    if (!allowedRoles) return false;
-    
-    return allowedRoles.includes(state.currentUser.role.name);
-}
-
-function checkPermissionAndAlert(permission, action) {
-    if (!hasPermission(permission)) {
-        showNotification('Permission Denied', `You don't have permission to ${action}`, 'error');
-        return false;
-    }
-    return true;
-}
-
-// ============================================
-// NAVIGATION
-// ============================================
-function switchView(viewName) {
-    // Update nav items
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.classList.toggle('active', item.dataset.view === viewName);
-    });
-    
-    // Update views
-    document.querySelectorAll('.view').forEach(view => {
-        view.classList.toggle('active', view.id === `${viewName}View`);
-    });
-    
-    // Initialize map if switching to map or fencing view
-    if (viewName === 'map' && !state.map) {
-        setTimeout(() => initMainMap(), 100);
-    }
-    if (viewName === 'fencing' && !state.fencingMap) {
-        setTimeout(() => initFencingMap(), 100);
-    }
-}
-
-// ============================================
-// MAPS
-// ============================================
-function initMaps() {
-    // Initialize mini map on dashboard
-    setTimeout(() => initMiniMap(), 100);
-}
-
-function initMiniMap() {
-    const miniMapEl = document.getElementById('miniMap');
-    if (!miniMapEl || state.miniMap) return;
-    
-    state.miniMap = L.map('miniMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.miniMap);
-    
-    // Add rover marker
-    state.roverMarker = L.marker(CONFIG.MAP_CENTER, {
-        icon: createRoverIcon()
-    }).addTo(state.miniMap);
-}
-
-function initMainMap() {
-    const mainMapEl = document.getElementById('mainMap');
-    if (!mainMapEl || state.map) return;
-    
-    state.map = L.map('mainMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.map);
-    
-    // Add rover marker
-    if (!state.roverMarker) {
-        state.roverMarker = L.marker(state.rover.position || CONFIG.MAP_CENTER, {
-            icon: createRoverIcon()
-        }).addTo(state.map);
-    } else {
-        state.roverMarker.addTo(state.map);
-    }
-    
-    // Add home marker
-    if (state.rover.homePosition) {
-        L.marker(state.rover.homePosition, {
-            icon: createHomeIcon()
-        }).addTo(state.map);
-    }
-    
-    // Add fence polygon if exists
-    if (state.rover.fencePoints.length > 2) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff',
-            fillColor: '#00d4ff',
-            fillOpacity: 0.2
-        }).addTo(state.map);
-    }
-}
-
-function initFencingMap() {
-    const fencingMapEl = document.getElementById('fencingMap');
-    if (!fencingMapEl || state.fencingMap) return;
-    
-    state.fencingMap = L.map('fencingMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.fencingMap);
-    
-    // Add click handler for fencing
-    state.fencingMap.on('click', handleFenceMapClick);
-    
-    // Add existing fence points
-    if (state.rover.fencePoints.length > 0) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff',
-            fillColor: '#00d4ff',
-            fillOpacity: 0.2
-        }).addTo(state.fencingMap);
-        
-        state.fencePoints = state.rover.fencePoints.map(p => 
-            L.marker(p, { icon: createPointIcon() }).addTo(state.fencingMap)
-        );
-    }
-}
-
-function createRoverIcon() {
-    return L.divIcon({
-        className: 'rover-marker',
-        html: '<div style="background:#00d4ff;width:20px;height:20px;border-radius:50%;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.5);"></div>',
-        iconSize: [20, 20],
-        iconAnchor: [10, 10]
-    });
-}
-
-function createHomeIcon() {
-    return L.divIcon({
-        className: 'home-marker',
-        html: '<div style="background:#00ff88;width:16px;height:16px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [16, 16],
-        iconAnchor: [8, 8]
-    });
-}
-
-function createPointIcon() {
-    return L.divIcon({
-        className: 'fence-point',
-        html: '<div style="background:#ff4444;width:12px;height:12px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [12, 12],
-        iconAnchor: [6, 6]
-    });
-}
-
-function updateRoverPosition(lat, lng) {
-    state.rover.position = [lat, lng];
-    
-    if (state.roverMarker) {
-        state.roverMarker.setLatLng([lat, lng]);
-    }
-    
-    // Update mini map
-    if (state.miniMap) {
-        state.miniMap.panTo([lat, lng]);
-    }
-    
-    // Update main map
-    if (state.map) {
-        state.map.panTo([lat, lng]);
-    }
-}
-
-// ============================================
-// FENCING
-// ============================================
-function startFencingMode() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'edit patrol fencing')) return;
-    
-    state.fencingMode = true;
-    showNotification('Fencing Mode', 'Click on the map to add fence points', 'info');
-    
-    if (state.fencingMap) {
-        state.fencingMap.getContainer().style.cursor = 'crosshair';
-    }
-}
-
-function handleFenceMapClick(e) {
-    if (!state.fencingMode) return;
-    
-    const point = [e.latlng.lat, e.latlng.lng];
-    
-    // Add marker
-    const marker = L.marker(point, { icon: createPointIcon() }).addTo(state.fencingMap);
-    state.fencePoints.push(marker);
-    
-    // Update polygon
-    updateFencePolygon();
-}
-
-function updateFencePolygon() {
-    // Remove existing polygon
-    if (state.fencePolygon) {
-        state.fencingMap.removeLayer(state.fencePolygon);
-    }
-    
-    // Get points
-    const points = state.fencePoints.map(m => m.getLatLng());
-    
-    if (points.length > 2) {
-        state.fencePolygon = L.polygon(points, {
-            color: '#00d4ff',
-            fillColor: '#00d4ff',
-            fillOpacity: 0.2
-        }).addTo(state.fencingMap);
-    }
-    
-    // Update info
-    updateFencingInfo();
-}
-
-function updateFencingInfo() {
-    const points = state.fencePoints.length;
-    const area = state.fencePolygon ? calculatePolygonArea(state.fencePolygon) : 0;
-    
-    document.getElementById('fencePointCount').textContent = points;
-    document.getElementById('fenceArea').textContent = area.toFixed(2) + ' m²';
-}
-
-function calculatePolygonArea(polygon) {
-    const latlngs = polygon.getLatLngs()[0];
-    let area = 0;
-    
-    for (let i = 0; i < latlngs.length; i++) {
-        const j = (i + 1) % latlngs.length;
-        area += latlngs[i].lat * latlngs[j].lng;
-        area -= latlngs[j].lat * latlngs[i].lng;
-    }
-    
-    return Math.abs(area / 2) * 111319.9 * 111319.9; // Convert to m²
-}
-
-function clearFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'clear patrol fencing')) return;
-    
-    // Remove markers
-    state.fencePoints.forEach(m => state.fencingMap.removeLayer(m));
-    state.fencePoints = [];
-    
-    // Remove polygon
-    if (state.fencePolygon) {
-        state.fencingMap.removeLayer(state.fencePolygon);
-        state.fencePolygon = null;
-    }
-    
-    updateFencingInfo();
-    showNotification('Fence Cleared', 'Patrol fence has been cleared', 'success');
-}
-
-function saveFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'save patrol fencing')) return;
-    
-    if (state.fencePoints.length < 3) {
-        showNotification('Invalid Fence', 'At least 3 points are required', 'error');
-        return;
-    }
-    
-    state.rover.fencePoints = state.fencePoints.map(m => [m.getLatLng().lat, m.getLatLng().lng]);
-    
-    // Send to server
-    sendCommand('set_fence', { points: state.rover.fencePoints });
-    
-    showNotification('Fence Saved', 'Patrol fence has been saved and sent to rover', 'success');
-}
-
-// ============================================
-// WEBSOCKET CONNECTION
-// ============================================
-function connectWebSocket() {
-    if (state.ws) {
-        state.ws.close();
-    }
-    
-    try {
-        state.ws = new WebSocket(CONFIG.WS_URL);
-        
-        state.ws.onopen = () => {
-            console.log('WebSocket connected');
-            updateConnectionStatus(true);
-            
-            // Authenticate
-            state.ws.send(JSON.stringify({
-                type: 'auth',
-                user: state.currentUser
-            }));
-        };
-        
-        state.ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            handleWebSocketMessage(data);
-        };
-        
-        state.ws.onclose = () => {
-            console.log('WebSocket disconnected');
-            updateConnectionStatus(false);
-            
-            // Attempt reconnect
-            setTimeout(connectWebSocket, CONFIG.RECONNECT_INTERVAL);
-        };
-        
-        state.ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-        };
-    } catch (error) {
-        console.error('Failed to connect WebSocket:', error);
-        // Use simulation mode
-        startTelemetrySimulation();
-    }
-}
-
-function disconnectWebSocket() {
-    if (state.ws) {
-        state.ws.close();
-        state.ws = null;
-    }
-}
-
-function handleWebSocketMessage(data) {
-    switch (data.type) {
-        case 'telemetry':
-            handleTelemetry(data.payload);
-            break;
-        case 'chat':
-            handleChatMessage(data.payload);
-            break;
-        case 'alert':
-            handleAlert(data.payload);
-            break;
-        case 'user_joined':
-            handleUserJoined(data.payload);
-            break;
-        case 'user_left':
-            handleUserLeft(data.payload);
-            break;
-    }
-}
-
-function sendCommand(command, params = {}) {
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({
-            type: 'command',
-            command: command,
-            params: params,
-            user: state.currentUser
-        }));
-    } else {
-        // Simulation mode
-        console.log('Command (simulated):', command, params);
-        simulateCommand(command, params);
-    }
-}
-
-// ============================================
-// TELEMETRY
-// ============================================
-function handleTelemetry(data) {
-    // Update rover state
-    state.rover.battery = data.battery || state.rover.battery;
-    state.rover.speed = data.speed || state.rover.speed;
-    state.rover.heading = data.heading || state.rover.heading;
-    state.rover.status = data.status || state.rover.status;
-    
-    if (data.gps) {
-        updateRoverPosition(data.gps.lat, data.gps.lng);
-    }
-    
-    // Update UI
-    updateDashboard();
-}
-
-function updateDashboard() {
-    // Battery
-    const batteryEl = document.getElementById('batteryLevel');
-    if (batteryEl) {
-        batteryEl.textContent = state.rover.battery + '%';
-        batteryEl.className = state.rover.battery < 20 ? 'text-danger' : 
-                              state.rover.battery < 50 ? 'text-warning' : '';
-    }
-    
-    // Speed
-    const speedEl = document.getElementById('speedValue');
-    if (speedEl) speedEl.textContent = state.rover.speed.toFixed(1) + ' m/s';
-    
-    // Status
-    const statusEl = document.getElementById('roverStatus');
-    if (statusEl) {
-        statusEl.textContent = state.rover.status.toUpperCase();
-        statusEl.className = state.rover.status === 'patrolling' ? 'text-success' :
-                            state.rover.status === 'returning' ? 'text-warning' : '';
-    }
-    
-    // Heading
-    const headingEl = document.getElementById('headingValue');
-    if (headingEl) headingEl.textContent = state.rover.heading + '°';
-}
-
-function updateConnectionStatus(connected) {
-    state.rover.connected = connected;
-    
-    const statusDot = document.querySelector('.status-dot');
-    const statusText = document.querySelector('.connection-status span');
-    
-    if (statusDot) {
-        statusDot.style.background = connected ? '#00ff88' : '#ff4444';
-    }
-    
-    if (statusText) {
-        statusText.textContent = connected ? 'Connected' : 'Disconnected';
-    }
-}
-
-// ============================================
-// SIMULATION MODE
-// ============================================
-let simulationInterval = null;
-
-function startTelemetrySimulation() {
-    if (simulationInterval) return;
-    
-    // Set initial position
-    state.rover.position = CONFIG.MAP_CENTER;
-    state.rover.homePosition = CONFIG.MAP_CENTER;
-    state.rover.battery = 85;
-    state.rover.speed = 0;
-    state.rover.heading = 0;
-    state.rover.status = 'idle';
-    state.rover.connected = true;
-    
-    updateConnectionStatus(true);
-    updateDashboard();
-    
-    // Simulate telemetry updates
-    simulationInterval = setInterval(() => {
-        if (state.rover.status === 'patrolling') {
-            // Simulate movement
-            const lat = state.rover.position[0] + (Math.random() - 0.5) * 0.0005;
-            const lng = state.rover.position[1] + (Math.random() - 0.5) * 0.0005;
-            updateRoverPosition(lat, lng);
-            
-            state.rover.speed = 0.5 + Math.random() * 1.5;
-            state.rover.heading = Math.floor(Math.random() * 360);
-        }
-        
-        // Simulate battery drain
-        if (state.rover.status !== 'idle' && state.rover.status !== 'charging') {
-            state.rover.battery = Math.max(0, state.rover.battery - 0.01);
-        }
-        
-        updateDashboard();
-    }, 1000);
-}
-
-function simulateCommand(command, params) {
-    switch (command) {
-        case 'start_patrol':
-            state.rover.status = 'patrolling';
-            showNotification('Patrol Started', 'Rover is now patrolling', 'success');
-            break;
-        case 'stop_patrol':
-            state.rover.status = 'idle';
-            state.rover.speed = 0;
-            showNotification('Patrol Stopped', 'Rover has stopped', 'info');
-            break;
-        case 'return_home':
-            state.rover.status = 'returning';
-            showNotification('Returning Home', 'Rover is returning to base', 'info');
-            setTimeout(() => {
-                state.rover.status = 'idle';
-                state.rover.position = state.rover.homePosition;
-                updateRoverPosition(state.rover.homePosition[0], state.rover.homePosition[1]);
-                showNotification('Home Reached', 'Rover has returned to base', 'success');
-            }, 5000);
-            break;
-        case 'set_fence':
-            state.rover.fencePoints = params.points;
-            showNotification('Fence Updated', 'Patrol fence has been updated', 'success');
-            break;
-    }
-    
-    updateDashboard();
-}
-
-// ============================================
-// CHAT
-// ============================================
-function initChat() {
-    // Initialize messages for each channel
-    state.chat.channels.forEach(channel => {
-        state.chat.messages[channel.id] = [];
-    });
-    
-    // Add welcome message
-    state.chat.messages.general.push({
-        id: Date.now(),
-        user: 'System',
-        role: 'Admin',
-        content: 'Welcome to Stasis Sentinel Chat!',
-        timestamp: new Date()
-    });
-    
-    renderChannels();
-    renderMessages();
-}
-
-function renderChannels() {
-    const channelsEl = document.getElementById('chatChannels');
-    if (!channelsEl) return;
-    
-    channelsEl.innerHTML = state.chat.channels.map(channel => `
-        <div class="channel ${channel.id === state.chat.activeChannel ? 'active' : ''}" 
-             data-channel="${channel.id}">
-            <i class="fas ${channel.icon}"></i>
-            <span>${channel.name}</span>
-        </div>
-    `).join('');
-    
-    // Add click handlers
-    channelsEl.querySelectorAll('.channel').forEach(el => {
-        el.addEventListener('click', () => {
-            state.chat.activeChannel = el.dataset.channel;
-            renderChannels();
-            renderMessages();
-        });
-    });
-}
-
-function renderMessages() {
-    const messagesEl = document.getElementById('chatMessages');
-    if (!messagesEl) return;
-    
-    const messages = state.chat.messages[state.chat.activeChannel] || [];
-    
-    if (messages.length === 0) {
-        messagesEl.innerHTML = '<div class="no-data">No messages yet</div>';
-        return;
-    }
-    
-    messagesEl.innerHTML = messages.map(msg => `
-        <div class="message">
-            <div class="message-header">
-                <span class="message-user" style="color: ${ROLES[msg.role]?.color || '#888'}">${msg.user}</span>
-                <span class="message-time">${formatTime(msg.timestamp)}</span>
-            </div>
-            <div class="message-content">${msg.content}</div>
-        </div>
-    `).join('');
-    
-    // Scroll to bottom
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-}
-
-function sendChatMessage() {
-    if (!checkPermissionAndAlert('SEND_CHAT', 'send chat messages')) return;
-    if (state.settings.chatRestricted && state.currentUser.role.level < 3) {
-        showNotification('Chat Restricted', 'Chat is currently restricted to moderators and above', 'error');
-        return;
-    }
-    
-    const input = document.getElementById('chatInput');
-    const content = input.value.trim();
-    
-    if (!content) return;
-    
-    const message = {
-        id: Date.now(),
-        user: state.currentUser.name,
-        role: state.currentUser.role.name,
-        content: content,
-        timestamp: new Date()
-    };
-    
-    // Add to local messages
-    state.chat.messages[state.chat.activeChannel].push(message);
-    
-    // Send via WebSocket
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({
-            type: 'chat',
-            channel: state.chat.activeChannel,
-            message: message
-        }));
-    }
-    
-    input.value = '';
-    renderMessages();
-}
-
-function handleChatMessage(data) {
-    if (!state.chat.messages[data.channel]) {
-        state.chat.messages[data.channel] = [];
-    }
-    
-    state.chat.messages[data.channel].push(data.message);
-    
-    if (data.channel === state.chat.activeChannel) {
-        renderMessages();
-    }
-    
-    // Show notification if not in chat view
-    showNotification(`New message in ${data.channel}`, `${data.message.user}: ${data.message.content}`, 'info');
-}
-
-// ============================================
-// ALERTS
-// ============================================
-function handleAlert(data) {
-    state.notifications.unshift({
-        id: Date.now(),
-        type: data.type || 'info',
-        title: data.title,
-        message: data.message,
-        timestamp: new Date()
-    });
-    
-    showNotification(data.title, data.message, data.type);
-    updateNotificationBadge();
-}
-
-function showNotification(title, message, type = 'info') {
-    // Create toast notification
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `
-        <strong>${title}</strong>
-        <p>${message}</p>
-    `;
-    
-    toast.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: ${type === 'error' ? '#ff4444' : type === 'success' ? '#00ff88' : '#00d4ff'};
-        color: ${type === 'success' || type === 'info' ? '#1a1a2e' : 'white'};
-        padding: 15px 20px;
-        border-radius: 8px;
-        z-index: 10000;
-        animation: slideIn 0.3s ease;
-    `;
-    
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.animation = 'slideOut 0.3s ease';
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
-}
-
-function updateNotificationBadge() {
-    const badge = document.querySelector('.notif-badge');
-    if (badge) {
-        badge.textContent = state.notifications.length;
-        badge.style.display = state.notifications.length > 0 ? 'block' : 'none';
-    }
-}
-
-function toggleNotifications() {
-    const panel = document.getElementById('notificationPanel');
-    if (panel) {
-        panel.classList.toggle('show');
-    }
-}
-
-// ============================================
-// USER MANAGEMENT
-// ============================================
-function updateUserPanel() {
-    const nameEl = document.querySelector('.user-name');
-    const roleEl = document.querySelector('.user-role');
-    
-    if (nameEl) nameEl.textContent = state.currentUser.name;
-    if (roleEl) roleEl.textContent = state.currentUser.role.name;
-}
-
-function handleUserJoined(data) {
-    showNotification('User Joined', `${data.user.name} has joined`, 'info');
-}
-
-function handleUserLeft(data) {
-    showNotification('User Left', `${data.user.name} has left`, 'info');
-}
-
-// ============================================
-// TEAM VIEW
-// ============================================
-function initTeamView() {
-    renderTeamMembers();
-    renderPermissionsTable();
-}
-
-function renderTeamMembers() {
-    const mainTeamEl = document.getElementById('mainTeamMembers');
-    const supportersEl = document.getElementById('supporterMembers');
-    
-    if (mainTeamEl) {
-        mainTeamEl.innerHTML = TEAM_MEMBERS.main.map(member => createMemberCard(member)).join('');
-    }
-    
-    if (supportersEl) {
-        supportersEl.innerHTML = TEAM_MEMBERS.supporters.map(member => createMemberCard(member)).join('');
-    }
-}
-
-function createMemberCard(member) {
-    const role = ROLES[member.role.toUpperCase()] || ROLES.SUPPORTER;
-    return `
-        <div class="team-card">
-            <div class="member-avatar">
-                <i class="fas fa-user"></i>
-            </div>
-            <div class="member-info">
-                <div class="member-name">${member.name}</div>
-                <div class="member-role">${member.position}</div>
-            </div>
-            <span class="rank-badge ${member.role.toLowerCase()}">${role.name}</span>
-        </div>
-    `;
-}
-
-function renderPermissionsTable() {
-    const tableEl = document.getElementById('permissionsTable');
-    if (!tableEl) return;
-    
-    const permissions = Object.keys(PERMISSIONS);
-    const roles = ['Admin', 'Moderator', 'Officer', 'Supporter'];
-    
-    tableEl.innerHTML = `
-        <table>
-            <thead>
-                <tr>
-                    <th>Permission</th>
-                    ${roles.map(r => `<th>${r}</th>`).join('')}
-                </tr>
-            </thead>
-            <tbody>
-                ${permissions.map(perm => `
-                    <tr>
-                        <td>${formatPermission(perm)}</td>
-                        ${roles.map(role => `
-                            <td class="${PERMISSIONS[perm].includes(role) ? 'text-success' : 'text-danger'}">
-                                <i class="fas ${PERMISSIONS[perm].includes(role) ? 'fa-check' : 'fa-times'}"></i>
-                            </td>
-                        `).join('')}
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
-}
-
-function formatPermission(perm) {
-    return perm.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-}
-
-// ============================================
-// SETTINGS
-// ============================================
-function initSettings() {
-    // Load saved settings
-    const savedSettings = localStorage.getItem('stasis_settings');
-    if (savedSettings) {
-        state.settings = { ...state.settings, ...JSON.parse(savedSettings) };
-    }
-    
-    // Update UI
-    const radiusSlider = document.getElementById('patrolRadiusSlider');
-    if (radiusSlider) {
-        radiusSlider.value = state.settings.patrolRadius;
-        document.getElementById('radiusValue').textContent = state.settings.patrolRadius + 'm';
-    }
-    
-    // Checkboxes
-    document.getElementById('streamEnabled').checked = state.settings.streamEnabled;
-    document.getElementById('notificationsEnabled').checked = state.settings.notificationsEnabled;
-    document.getElementById('chatRestricted').checked = state.settings.chatRestricted;
-    document.getElementById('autoReturnHome').checked = state.settings.autoReturnHome;
-}
-
-function saveSettings() {
-    if (!checkPermissionAndAlert('EDIT_SETTINGS', 'edit settings')) return;
-    
-    // Get values from form
-    state.settings.patrolRadius = parseInt(document.getElementById('patrolRadiusSlider').value);
-    state.settings.streamEnabled = document.getElementById('streamEnabled').checked;
-    state.settings.notificationsEnabled = document.getElementById('notificationsEnabled').checked;
-    state.settings.chatRestricted = document.getElementById('chatRestricted').checked;
-    state.settings.autoReturnHome = document.getElementById('autoReturnHome').checked;
-    
-    // Save to localStorage
-    localStorage.setItem('stasis_settings', JSON.stringify(state.settings));
-    
-    showNotification('Settings Saved', 'Your settings have been saved', 'success');
+    showNotification('Settings Reset', 'Settings have been reset to defaults', 'info');
 }
 
 // ============================================
 // ROVER CONTROLS
 // ============================================
-function startPatrol() {
-    if (!checkPermissionAndAlert('START_PATROL', 'start patrol')) return;
-    sendCommand('start_patrol');
-}
-
-function stopPatrol() {
-    if (!checkPermissionAndAlert('STOP_PATROL', 'stop patrol')) return;
-    sendCommand('stop_patrol');
-}
-
-function returnHome() {
-    if (!checkPermissionAndAlert('RETURN_HOME', 'return rover home')) return;
-    sendCommand('return_home');
-}
-
-function emergencyStop() {
-    sendCommand('emergency_stop');
-    showNotification('Emergency Stop', 'Rover has been stopped!', 'error');
+function sendCommandToRover(cmd) {
+    if (!state.connected && !state.simulationMode) {
+        showNotification('Offline', 'Not connected to base station', 'error');
+        return;
+    }
+    
+    switch (cmd) {
+        case 'STOP':
+            state.rover.status = 'IDLE';
+            sendCommand('STOP');
+            showNotification('Stopped', 'Rover has been stopped', 'info');
+            break;
+        case 'START_PATROL':
+            state.rover.status = 'PATROL';
+            sendCommand('START_PATROL');
+            showNotification('Patrol Started', 'Rover is now patrolling', 'success');
+            break;
+        case 'RETURN_BASE':
+            state.rover.status = 'RETURNING';
+            sendCommand('RETURN_BASE');
+            showNotification('Returning', 'Rover is returning to base', 'info');
+            break;
+    }
+    
+    updateDashboard();
 }
 
 // ============================================
@@ -2950,2207 +1124,45 @@ function formatTime(date) {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-// ============================================
-// CSS ANIMATIONS (injected)
-// ============================================
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideIn {
-        from { transform: translateX(100%); opacity: 0; }
-        to { transform: translateX(0); opacity: 1; }
-    }
-    @keyframes slideOut {
-        from { transform: translateX(0); opacity: 1; }
-        to { transform: translateX(100%); opacity: 0; }
-    }
-    .message { margin-bottom: 10px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 5px; }
-    .message-header { display: flex; justify-content: space-between; margin-bottom: 5px; }
-    .message-time { font-size: 11px; color: #888; }
-    .message-content { font-size: 14px; }
-`;
-document.head.appendChild(style);
-
-
-// ============================================
-// CONFIGURATION
-// ============================================
-const CONFIG = {
-    API_URL: 'http://localhost:5000/api',
-    WS_URL: 'ws://localhost:5000/ws',
-    MAP_CENTER: [11.0168, 76.9558], // Default center (Coimbatore, India)
-    MAP_ZOOM: 15,
-    DEFAULT_PATROL_RADIUS: 250, // meters
-    MAX_PATROL_RADIUS: 1000, // meters
-    STREAM_URL: 'http://192.168.4.1:81/stream',
-    RECONNECT_INTERVAL: 5000
-};
-
-// ============================================
-// ROLES & PERMISSIONS
-// ============================================
-const ROLES = {
-    ADMIN: { id: 4, name: 'Admin', color: '#ff4444', level: 4 },
-    MODERATOR: { id: 3, name: 'Moderator', color: '#00d4ff', level: 3 },
-    OFFICER: { id: 2, name: 'Officer', color: '#00ff88', level: 2 },
-    SUPPORTER: { id: 1, name: 'Supporter', color: '#888888', level: 1 }
-};
-
-const PERMISSIONS = {
-    CONTROL_ROVER: ['Admin', 'Moderator'],
-    EDIT_FENCING: ['Admin', 'Moderator'],
-    VIEW_STREAM: ['Admin', 'Moderator', 'Officer'],
-    SEND_CHAT: ['Admin', 'Moderator', 'Officer', 'Supporter'],
-    VIEW_TELEMETRY: ['Admin', 'Moderator', 'Officer'],
-    MANAGE_USERS: ['Admin'],
-    EDIT_SETTINGS: ['Admin', 'Moderator'],
-    VIEW_ALERTS: ['Admin', 'Moderator', 'Officer'],
-    START_PATROL: ['Admin', 'Moderator'],
-    STOP_PATROL: ['Admin', 'Moderator'],
-    RETURN_HOME: ['Admin', 'Moderator']
-};
-
-// ============================================
-// TEAM MEMBERS
-// ============================================
-const TEAM_MEMBERS = {
-    main: [
-        { name: 'Kartik', nickname: 'Shadow', role: 'Admin', position: 'Leader and Initiative' },
-        { name: 'Harish', nickname: 'Phoenix', role: 'Moderator', position: 'Team Member' },
-        { name: 'Ryan Ahmed', nickname: 'Blaze', role: 'Officer', position: 'Team Member' },
-        { name: 'Mohaideen Ijaz', nickname: 'Storm', role: 'Officer', position: 'Team Member' },
-        { name: 'Swethen', nickname: 'Frost', role: 'Officer', position: 'Team Member' }
-    ],
-    supporters: [
-        { name: 'Stephen', nickname: 'Echo', role: 'Supporter', position: 'Team Member' },
-        { name: 'Krish', nickname: 'Nova', role: 'Supporter', position: 'Team Member' },
-        { name: 'Inba', nickname: 'Spark', role: 'Supporter', position: 'Team Member' },
-        { name: 'Baavasri', nickname: 'Viper', role: 'Supporter', position: 'Team Member' },
-        { name: 'Janane', nickname: 'Raven', role: 'Supporter', position: 'Team Member' }
-    ]
-};
-
-// ============================================
-// APPLICATION STATE
-// ============================================
-let state = {
-    currentUser: null,
-    rover: {
-        connected: false,
-        position: null,
-        battery: 0,
-        speed: 0,
-        heading: 0,
-        status: 'idle',
-        patrolMode: 'auto',
-        fencePoints: [],
-        homePosition: null
-    },
-    map: null,
-    fencingMap: null,
-    roverMarker: null,
-    fencePolygon: null,
-    fencePoints: [],
-    fencingMode: false,
-    ws: null,
-    chat: {
-        channels: [
-            { id: 'general', name: 'General', icon: 'fa-hashtag' },
-            { id: 'alerts', name: 'Alerts', icon: 'fa-exclamation-triangle' },
-            { id: 'patrol', name: 'Patrol Updates', icon: 'fa-route' }
-        ],
-        activeChannel: 'general',
-        messages: {}
-    },
-    settings: {
-        patrolRadius: CONFIG.DEFAULT_PATROL_RADIUS,
-        streamEnabled: true,
-        notificationsEnabled: true,
-        chatRestricted: false,
-        autoReturnHome: true,
-        reportEmails: []
-    },
-    notifications: []
-};
-
-// ============================================
-// INITIALIZATION
-// ============================================
-document.addEventListener('DOMContentLoaded', () => {
-    initApp();
-});
-
-function initApp() {
-    // Check for saved session
-    const savedUser = localStorage.getItem('stasis_user');
-    if (savedUser) {
-        state.currentUser = JSON.parse(savedUser);
-        showApp();
-    } else {
-        showLoginModal();
-    }
-    
-    // Initialize event listeners
-    initEventListeners();
-}
-
-function initEventListeners() {
-    // Navigation
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.addEventListener('click', (e) => {
-            e.preventDefault();
-            const view = item.dataset.view;
-            if (view) switchView(view);
-        });
-    });
-    
-    // Login form
-    document.getElementById('loginForm')?.addEventListener('submit', handleLogin);
-    
-    // Chat
-    document.getElementById('chatInput')?.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendChatMessage();
-    });
-    
-    document.getElementById('sendChatBtn')?.addEventListener('click', sendChatMessage);
-    
-    // Settings
-    document.getElementById('saveSettingsBtn')?.addEventListener('click', saveSettings);
-    
-    // Notifications
-    document.getElementById('notifBtn')?.addEventListener('click', toggleNotifications);
-    
-    // Logout
-    document.getElementById('logoutBtn')?.addEventListener('click', handleLogout);
-    
-    // Fencing controls
-    document.getElementById('startFencingBtn')?.addEventListener('click', startFencingMode);
-    document.getElementById('clearFenceBtn')?.addEventListener('click', clearFence);
-    document.getElementById('saveFenceBtn')?.addEventListener('click', saveFence);
-    
-    // Patrol radius slider
-    document.getElementById('patrolRadiusSlider')?.addEventListener('input', (e) => {
-        document.getElementById('radiusValue').textContent = e.target.value + 'm';
-        state.settings.patrolRadius = parseInt(e.target.value);
-    });
-}
-
-// ============================================
-// AUTHENTICATION
-// ============================================
-function showLoginModal() {
-    document.getElementById('loginModal')?.classList.remove('hidden');
-}
-
-function hideLoginModal() {
-    document.getElementById('loginModal')?.classList.add('hidden');
-}
-
-function handleLogin(e) {
-    e.preventDefault();
-    
-    const email = document.getElementById('loginEmail').value;
-    const password = document.getElementById('loginPassword').value;
-    
-    // Find user in team members
-    let user = null;
-    let role = ROLES.SUPPORTER;
-    
-    // Check main team
-    for (const member of TEAM_MEMBERS.main) {
-        if (email.toLowerCase().includes(member.name.toLowerCase())) {
-            user = member;
-            role = ROLES[member.role.toUpperCase()] || ROLES.OFFICER;
-            break;
-        }
-    }
-    
-    // Check supporters if not found in main
-    if (!user) {
-        for (const member of TEAM_MEMBERS.supporters) {
-            if (email.toLowerCase().includes(member.name.toLowerCase())) {
-                user = member;
-                role = ROLES.SUPPORTER;
-                break;
-            }
-        }
-    }
-    
-    // Demo mode - allow any email
-    if (!user) {
-        user = { name: email.split('@')[0], role: 'Supporter', position: 'Guest' };
-        role = ROLES.SUPPORTER;
-    }
-    
-    state.currentUser = {
-        ...user,
-        email: email,
-        role: role
-    };
-    
-    localStorage.setItem('stasis_user', JSON.stringify(state.currentUser));
-    hideLoginModal();
-    showApp();
-}
-
-function handleLogout() {
-    state.currentUser = null;
-    localStorage.removeItem('stasis_user');
-    disconnectWebSocket();
-    showLoginModal();
-}
-
-function showApp() {
-    updateUserPanel();
-    initMaps();
-    connectWebSocket();
-    initChat();
-    initSettings();
-    initTeamView();
-    startTelemetrySimulation();
-}
-
-// ============================================
-// PERMISSIONS
-// ============================================
-function hasPermission(permission) {
-    if (!state.currentUser) return false;
-    
-    const allowedRoles = PERMISSIONS[permission];
-    if (!allowedRoles) return false;
-    
-    return allowedRoles.includes(state.currentUser.role.name);
-}
-
-function checkPermissionAndAlert(permission, action) {
-    if (!hasPermission(permission)) {
-        showNotification('Permission Denied', `You don't have permission to ${action}`, 'error');
-        return false;
-    }
-    return true;
-}
-
-// ============================================
-// NAVIGATION
-// ============================================
-function switchView(viewName) {
-    // Update nav items
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.classList.toggle('active', item.dataset.view === viewName);
-    });
-    
-    // Update views
-    document.querySelectorAll('.view').forEach(view => {
-        view.classList.toggle('active', view.id === `${viewName}View`);
-    });
-    
-    // Initialize map if switching to map or fencing view
-    if (viewName === 'map' && !state.map) {
-        setTimeout(() => initMainMap(), 100);
-    }
-    if (viewName === 'fencing' && !state.fencingMap) {
-        setTimeout(() => initFencingMap(), 100);
-    }
-}
-
-// ============================================
-// MAPS
-// ============================================
-function initMaps() {
-    // Initialize mini map on dashboard
-    setTimeout(() => initMiniMap(), 100);
-}
-
-function initMiniMap() {
-    const miniMapEl = document.getElementById('miniMap');
-    if (!miniMapEl || state.miniMap) return;
-    
-    state.miniMap = L.map('miniMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.miniMap);
-    
-    // Add rover marker
-    state.roverMarker = L.marker(CONFIG.MAP_CENTER, {
-        icon: createRoverIcon()
-    }).addTo(state.miniMap);
-}
-
-function initMainMap() {
-    const mainMapEl = document.getElementById('mainMap');
-    if (!mainMapEl || state.map) return;
-    
-    state.map = L.map('mainMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.map);
-    
-    // Add rover marker
-    if (!state.roverMarker) {
-        state.roverMarker = L.marker(state.rover.position || CONFIG.MAP_CENTER, {
-            icon: createRoverIcon()
-        }).addTo(state.map);
-    } else {
-        state.roverMarker.addTo(state.map);
-    }
-    
-    // Add home marker
-    if (state.rover.homePosition) {
-        L.marker(state.rover.homePosition, {
-            icon: createHomeIcon()
-        }).addTo(state.map);
-    }
-    
-    // Add fence polygon if exists
-    if (state.rover.fencePoints.length > 2) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff',
-            fillColor: '#00d4ff',
-            fillOpacity: 0.2
-        }).addTo(state.map);
-    }
-}
-
-function initFencingMap() {
-    const fencingMapEl = document.getElementById('fencingMap');
-    if (!fencingMapEl || state.fencingMap) return;
-    
-    state.fencingMap = L.map('fencingMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.fencingMap);
-    
-    // Add click handler for fencing
-    state.fencingMap.on('click', handleFenceMapClick);
-    
-    // Add existing fence points
-    if (state.rover.fencePoints.length > 0) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff',
-            fillColor: '#00d4ff',
-            fillOpacity: 0.2
-        }).addTo(state.fencingMap);
-        
-        state.fencePoints = state.rover.fencePoints.map(p => 
-            L.marker(p, { icon: createPointIcon() }).addTo(state.fencingMap)
-        );
-    }
-}
-
-function createRoverIcon() {
-    return L.divIcon({
-        className: 'rover-marker',
-        html: '<div style="background:#00d4ff;width:20px;height:20px;border-radius:50%;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.5);"></div>',
-        iconSize: [20, 20],
-        iconAnchor: [10, 10]
-    });
-}
-
-function createHomeIcon() {
-    return L.divIcon({
-        className: 'home-marker',
-        html: '<div style="background:#00ff88;width:16px;height:16px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [16, 16],
-        iconAnchor: [8, 8]
-    });
-}
-
-function createPointIcon() {
-    return L.divIcon({
-        className: 'fence-point',
-        html: '<div style="background:#ff4444;width:12px;height:12px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [12, 12],
-        iconAnchor: [6, 6]
-    });
-}
-
-function updateRoverPosition(lat, lng) {
-    state.rover.position = [lat, lng];
-    
-    if (state.roverMarker) {
-        state.roverMarker.setLatLng([lat, lng]);
-    }
-    
-    // Update mini map
-    if (state.miniMap) {
-        state.miniMap.panTo([lat, lng]);
-    }
-    
-    // Update main map
-    if (state.map) {
-        state.map.panTo([lat, lng]);
-    }
-}
-
-// ============================================
-// FENCING
-// ============================================
-function startFencingMode() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'edit patrol fencing')) return;
-    
-    state.fencingMode = true;
-    showNotification('Fencing Mode', 'Click on the map to add fence points', 'info');
-    
-    if (state.fencingMap) {
-        state.fencingMap.getContainer().style.cursor = 'crosshair';
-    }
-}
-
-function handleFenceMapClick(e) {
-    if (!state.fencingMode) return;
-    
-    const point = [e.latlng.lat, e.latlng.lng];
-    
-    // Add marker
-    const marker = L.marker(point, { icon: createPointIcon() }).addTo(state.fencingMap);
-    state.fencePoints.push(marker);
-    
-    // Update polygon
-    updateFencePolygon();
-}
-
-function updateFencePolygon() {
-    // Remove existing polygon
-    if (state.fencePolygon) {
-        state.fencingMap.removeLayer(state.fencePolygon);
-    }
-    
-    // Get points
-    const points = state.fencePoints.map(m => m.getLatLng());
-    
-    if (points.length > 2) {
-        state.fencePolygon = L.polygon(points, {
-            color: '#00d4ff',
-            fillColor: '#00d4ff',
-            fillOpacity: 0.2
-        }).addTo(state.fencingMap);
-    }
-    
-    // Update info
-    updateFencingInfo();
-}
-
-function updateFencingInfo() {
-    const points = state.fencePoints.length;
-    const area = state.fencePolygon ? calculatePolygonArea(state.fencePolygon) : 0;
-    
-    document.getElementById('fencePointCount').textContent = points;
-    document.getElementById('fenceArea').textContent = area.toFixed(2) + ' m²';
-}
-
-function calculatePolygonArea(polygon) {
-    const latlngs = polygon.getLatLngs()[0];
-    let area = 0;
-    
-    for (let i = 0; i < latlngs.length; i++) {
-        const j = (i + 1) % latlngs.length;
-        area += latlngs[i].lat * latlngs[j].lng;
-        area -= latlngs[j].lat * latlngs[i].lng;
-    }
-    
-    return Math.abs(area / 2) * 111319.9 * 111319.9; // Convert to m²
-}
-
-function clearFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'clear patrol fencing')) return;
-    
-    // Remove markers
-    state.fencePoints.forEach(m => state.fencingMap.removeLayer(m));
-    state.fencePoints = [];
-    
-    // Remove polygon
-    if (state.fencePolygon) {
-        state.fencingMap.removeLayer(state.fencePolygon);
-        state.fencePolygon = null;
-    }
-    
-    updateFencingInfo();
-    showNotification('Fence Cleared', 'Patrol fence has been cleared', 'success');
-}
-
-function saveFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'save patrol fencing')) return;
-    
-    if (state.fencePoints.length < 3) {
-        showNotification('Invalid Fence', 'At least 3 points are required', 'error');
-        return;
-    }
-    
-    state.rover.fencePoints = state.fencePoints.map(m => [m.getLatLng().lat, m.getLatLng().lng]);
-    
-    // Send to server
-    sendCommand('set_fence', { points: state.rover.fencePoints });
-    
-    showNotification('Fence Saved', 'Patrol fence has been saved and sent to rover', 'success');
-}
-
-// ============================================
-// WEBSOCKET CONNECTION
-// ============================================
-function connectWebSocket() {
-    if (state.ws) {
-        state.ws.close();
-    }
-    
-    try {
-        state.ws = new WebSocket(CONFIG.WS_URL);
-        
-        state.ws.onopen = () => {
-            console.log('WebSocket connected');
-            updateConnectionStatus(true);
-            
-            // Authenticate
-            state.ws.send(JSON.stringify({
-                type: 'auth',
-                user: state.currentUser
-            }));
-        };
-        
-        state.ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            handleWebSocketMessage(data);
-        };
-        
-        state.ws.onclose = () => {
-            console.log('WebSocket disconnected');
-            updateConnectionStatus(false);
-            
-            // Attempt reconnect
-            setTimeout(connectWebSocket, CONFIG.RECONNECT_INTERVAL);
-        };
-        
-        state.ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-        };
-    } catch (error) {
-        console.error('Failed to connect WebSocket:', error);
-        // Use simulation mode
-        startTelemetrySimulation();
-    }
-}
-
-function disconnectWebSocket() {
-    if (state.ws) {
-        state.ws.close();
-        state.ws = null;
-    }
-}
-
-function handleWebSocketMessage(data) {
-    switch (data.type) {
-        case 'telemetry':
-            handleTelemetry(data.payload);
-            break;
-        case 'chat':
-            handleChatMessage(data.payload);
-            break;
-        case 'alert':
-            handleAlert(data.payload);
-            break;
-        case 'user_joined':
-            handleUserJoined(data.payload);
-            break;
-        case 'user_left':
-            handleUserLeft(data.payload);
-            break;
-    }
-}
-
-function sendCommand(command, params = {}) {
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({
-            type: 'command',
-            command: command,
-            params: params,
-            user: state.currentUser
-        }));
-    } else {
-        // Simulation mode
-        console.log('Command (simulated):', command, params);
-        simulateCommand(command, params);
-    }
-}
-
-// ============================================
-// TELEMETRY
-// ============================================
-function handleTelemetry(data) {
-    // Update rover state
-    state.rover.battery = data.battery || state.rover.battery;
-    state.rover.speed = data.speed || state.rover.speed;
-    state.rover.heading = data.heading || state.rover.heading;
-    state.rover.status = data.status || state.rover.status;
-    
-    if (data.gps) {
-        updateRoverPosition(data.gps.lat, data.gps.lng);
-    }
-    
-    // Update UI
-    updateDashboard();
-}
-
-function updateDashboard() {
-    // Battery
-    const batteryEl = document.getElementById('batteryLevel');
-    if (batteryEl) {
-        batteryEl.textContent = state.rover.battery + '%';
-        batteryEl.className = state.rover.battery < 20 ? 'text-danger' : 
-                              state.rover.battery < 50 ? 'text-warning' : '';
-    }
-    
-    // Speed
-    const speedEl = document.getElementById('speedValue');
-    if (speedEl) speedEl.textContent = state.rover.speed.toFixed(1) + ' m/s';
-    
-    // Status
-    const statusEl = document.getElementById('roverStatus');
-    if (statusEl) {
-        statusEl.textContent = state.rover.status.toUpperCase();
-        statusEl.className = state.rover.status === 'patrolling' ? 'text-success' :
-                            state.rover.status === 'returning' ? 'text-warning' : '';
-    }
-    
-    // Heading
-    const headingEl = document.getElementById('headingValue');
-    if (headingEl) headingEl.textContent = state.rover.heading + '°';
-}
-
-function updateConnectionStatus(connected) {
-    state.rover.connected = connected;
-    
-    const statusDot = document.querySelector('.status-dot');
-    const statusText = document.querySelector('.connection-status span');
-    
-    if (statusDot) {
-        statusDot.style.background = connected ? '#00ff88' : '#ff4444';
-    }
-    
-    if (statusText) {
-        statusText.textContent = connected ? 'Connected' : 'Disconnected';
-    }
-}
-
-// ============================================
-// SIMULATION MODE
-// ============================================
-let simulationInterval = null;
-
-function startTelemetrySimulation() {
-    if (simulationInterval) return;
-    
-    // Set initial position
-    state.rover.position = CONFIG.MAP_CENTER;
-    state.rover.homePosition = CONFIG.MAP_CENTER;
-    state.rover.battery = 85;
-    state.rover.speed = 0;
-    state.rover.heading = 0;
-    state.rover.status = 'idle';
-    state.rover.connected = true;
-    
-    updateConnectionStatus(true);
-    updateDashboard();
-    
-    // Simulate telemetry updates
-    simulationInterval = setInterval(() => {
-        if (state.rover.status === 'patrolling') {
-            // Simulate movement
-            const lat = state.rover.position[0] + (Math.random() - 0.5) * 0.0005;
-            const lng = state.rover.position[1] + (Math.random() - 0.5) * 0.0005;
-            updateRoverPosition(lat, lng);
-            
-            state.rover.speed = 0.5 + Math.random() * 1.5;
-            state.rover.heading = Math.floor(Math.random() * 360);
-        }
-        
-        // Simulate battery drain
-        if (state.rover.status !== 'idle' && state.rover.status !== 'charging') {
-            state.rover.battery = Math.max(0, state.rover.battery - 0.01);
-        }
-        
-        updateDashboard();
-    }, 1000);
-}
-
-function simulateCommand(command, params) {
-    switch (command) {
-        case 'start_patrol':
-            state.rover.status = 'patrolling';
-            showNotification('Patrol Started', 'Rover is now patrolling', 'success');
-            break;
-        case 'stop_patrol':
-            state.rover.status = 'idle';
-            state.rover.speed = 0;
-            showNotification('Patrol Stopped', 'Rover has stopped', 'info');
-            break;
-        case 'return_home':
-            state.rover.status = 'returning';
-            showNotification('Returning Home', 'Rover is returning to base', 'info');
-            setTimeout(() => {
-                state.rover.status = 'idle';
-                state.rover.position = state.rover.homePosition;
-                updateRoverPosition(state.rover.homePosition[0], state.rover.homePosition[1]);
-                showNotification('Home Reached', 'Rover has returned to base', 'success');
-            }, 5000);
-            break;
-        case 'set_fence':
-            state.rover.fencePoints = params.points;
-            showNotification('Fence Updated', 'Patrol fence has been updated', 'success');
-            break;
-    }
-    
-    updateDashboard();
-}
-
-// ============================================
-// CHAT
-// ============================================
-function initChat() {
-    // Initialize messages for each channel
-    state.chat.channels.forEach(channel => {
-        state.chat.messages[channel.id] = [];
-    });
-    
-    // Add welcome message
-    state.chat.messages.general.push({
-        id: Date.now(),
-        user: 'System',
-        role: 'Admin',
-        content: 'Welcome to Stasis Sentinel Chat!',
-        timestamp: new Date()
-    });
-    
-    renderChannels();
-    renderMessages();
-}
-
-function renderChannels() {
-    const channelsEl = document.getElementById('chatChannels');
-    if (!channelsEl) return;
-    
-    channelsEl.innerHTML = state.chat.channels.map(channel => `
-        <div class="channel ${channel.id === state.chat.activeChannel ? 'active' : ''}" 
-             data-channel="${channel.id}">
-            <i class="fas ${channel.icon}"></i>
-            <span>${channel.name}</span>
-        </div>
-    `).join('');
-    
-    // Add click handlers
-    channelsEl.querySelectorAll('.channel').forEach(el => {
-        el.addEventListener('click', () => {
-            state.chat.activeChannel = el.dataset.channel;
-            renderChannels();
-            renderMessages();
-        });
-    });
-}
-
-function renderMessages() {
-    const messagesEl = document.getElementById('chatMessages');
-    if (!messagesEl) return;
-    
-    const messages = state.chat.messages[state.chat.activeChannel] || [];
-    
-    if (messages.length === 0) {
-        messagesEl.innerHTML = '<div class="no-data">No messages yet</div>';
-        return;
-    }
-    
-    messagesEl.innerHTML = messages.map(msg => `
-        <div class="message">
-            <div class="message-header">
-                <span class="message-user" style="color: ${ROLES[msg.role]?.color || '#888'}">${msg.user}</span>
-                <span class="message-time">${formatTime(msg.timestamp)}</span>
-            </div>
-            <div class="message-content">${msg.content}</div>
-        </div>
-    `).join('');
-    
-    // Scroll to bottom
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-}
-
-function sendChatMessage() {
-    if (!checkPermissionAndAlert('SEND_CHAT', 'send chat messages')) return;
-    if (state.settings.chatRestricted && state.currentUser.role.level < 3) {
-        showNotification('Chat Restricted', 'Chat is currently restricted to moderators and above', 'error');
-        return;
-    }
-    
-    const input = document.getElementById('chatInput');
-    const content = input.value.trim();
-    
-    if (!content) return;
-    
-    const message = {
-        id: Date.now(),
-        user: state.currentUser.name,
-        role: state.currentUser.role.name,
-        content: content,
-        timestamp: new Date()
-    };
-    
-    // Add to local messages
-    state.chat.messages[state.chat.activeChannel].push(message);
-    
-    // Send via WebSocket
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({
-            type: 'chat',
-            channel: state.chat.activeChannel,
-            message: message
-        }));
-    }
-    
-    input.value = '';
-    renderMessages();
-}
-
-function handleChatMessage(data) {
-    if (!state.chat.messages[data.channel]) {
-        state.chat.messages[data.channel] = [];
-    }
-    
-    state.chat.messages[data.channel].push(data.message);
-    
-    if (data.channel === state.chat.activeChannel) {
-        renderMessages();
-    }
-    
-    // Show notification if not in chat view
-    showNotification(`New message in ${data.channel}`, `${data.message.user}: ${data.message.content}`, 'info');
-}
-
-// ============================================
-// ALERTS
-// ============================================
-function handleAlert(data) {
-    state.notifications.unshift({
-        id: Date.now(),
-        type: data.type || 'info',
-        title: data.title,
-        message: data.message,
-        timestamp: new Date()
-    });
-    
-    showNotification(data.title, data.message, data.type);
-    updateNotificationBadge();
-}
-
-function showNotification(title, message, type = 'info') {
-    // Create toast notification
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `
-        <strong>${title}</strong>
-        <p>${message}</p>
-    `;
-    
-    toast.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: ${type === 'error' ? '#ff4444' : type === 'success' ? '#00ff88' : '#00d4ff'};
-        color: ${type === 'success' || type === 'info' ? '#1a1a2e' : 'white'};
-        padding: 15px 20px;
-        border-radius: 8px;
-        z-index: 10000;
-        animation: slideIn 0.3s ease;
-    `;
-    
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.animation = 'slideOut 0.3s ease';
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
-}
-
-function updateNotificationBadge() {
-    const badge = document.querySelector('.notif-badge');
-    if (badge) {
-        badge.textContent = state.notifications.length;
-        badge.style.display = state.notifications.length > 0 ? 'block' : 'none';
-    }
-}
-
-function toggleNotifications() {
-    const panel = document.getElementById('notificationPanel');
-    if (panel) {
-        panel.classList.toggle('show');
-    }
-}
-
-// ============================================
-// USER MANAGEMENT
-// ============================================
-function updateUserPanel() {
-    const nameEl = document.querySelector('.user-name');
-    const roleEl = document.querySelector('.user-role');
-    
-    if (nameEl) nameEl.textContent = state.currentUser.name;
-    if (roleEl) roleEl.textContent = state.currentUser.role.name;
-}
-
-function handleUserJoined(data) {
-    showNotification('User Joined', `${data.user.name} has joined`, 'info');
-}
-
-function handleUserLeft(data) {
-    showNotification('User Left', `${data.user.name} has left`, 'info');
-}
-
-// ============================================
-// TEAM VIEW
-// ============================================
-function initTeamView() {
-    renderTeamMembers();
-    renderPermissionsTable();
-}
-
-function renderTeamMembers() {
-    const mainTeamEl = document.getElementById('mainTeamMembers');
-    const supportersEl = document.getElementById('supporterMembers');
-    
-    if (mainTeamEl) {
-        mainTeamEl.innerHTML = TEAM_MEMBERS.main.map(member => createMemberCard(member)).join('');
-    }
-    
-    if (supportersEl) {
-        supportersEl.innerHTML = TEAM_MEMBERS.supporters.map(member => createMemberCard(member)).join('');
-    }
-}
-
-function createMemberCard(member) {
-    const role = ROLES[member.role.toUpperCase()] || ROLES.SUPPORTER;
-    return `
-        <div class="team-card">
-            <div class="member-avatar">
-                <i class="fas fa-user"></i>
-            </div>
-            <div class="member-info">
-                <div class="member-name">${member.name}</div>
-                <div class="member-role">${member.position}</div>
-            </div>
-            <span class="rank-badge ${member.role.toLowerCase()}">${role.name}</span>
-        </div>
-    `;
-}
-
-function renderPermissionsTable() {
-    const tableEl = document.getElementById('permissionsTable');
-    if (!tableEl) return;
-    
-    const permissions = Object.keys(PERMISSIONS);
-    const roles = ['Admin', 'Moderator', 'Officer', 'Supporter'];
-    
-    tableEl.innerHTML = `
-        <table>
-            <thead>
-                <tr>
-                    <th>Permission</th>
-                    ${roles.map(r => `<th>${r}</th>`).join('')}
-                </tr>
-            </thead>
-            <tbody>
-                ${permissions.map(perm => `
-                    <tr>
-                        <td>${formatPermission(perm)}</td>
-                        ${roles.map(role => `
-                            <td class="${PERMISSIONS[perm].includes(role) ? 'text-success' : 'text-danger'}">
-                                <i class="fas ${PERMISSIONS[perm].includes(role) ? 'fa-check' : 'fa-times'}"></i>
-                            </td>
-                        `).join('')}
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
-}
-
-function formatPermission(perm) {
-    return perm.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-}
-
-// ============================================
-// SETTINGS
-// ============================================
-function initSettings() {
-    // Load saved settings
-    const savedSettings = localStorage.getItem('stasis_settings');
-    if (savedSettings) {
-        state.settings = { ...state.settings, ...JSON.parse(savedSettings) };
-    }
-    
-    // Update UI
-    const radiusSlider = document.getElementById('patrolRadiusSlider');
-    if (radiusSlider) {
-        radiusSlider.value = state.settings.patrolRadius;
-        document.getElementById('radiusValue').textContent = state.settings.patrolRadius + 'm';
-    }
-    
-    // Checkboxes
-    document.getElementById('streamEnabled').checked = state.settings.streamEnabled;
-    document.getElementById('notificationsEnabled').checked = state.settings.notificationsEnabled;
-    document.getElementById('chatRestricted').checked = state.settings.chatRestricted;
-    document.getElementById('autoReturnHome').checked = state.settings.autoReturnHome;
-}
-
-function saveSettings() {
-    if (!checkPermissionAndAlert('EDIT_SETTINGS', 'edit settings')) return;
-    
-    // Get values from form
-    state.settings.patrolRadius = parseInt(document.getElementById('patrolRadiusSlider').value);
-    state.settings.streamEnabled = document.getElementById('streamEnabled').checked;
-    state.settings.notificationsEnabled = document.getElementById('notificationsEnabled').checked;
-    state.settings.chatRestricted = document.getElementById('chatRestricted').checked;
-    state.settings.autoReturnHome = document.getElementById('autoReturnHome').checked;
-    
-    // Save to localStorage
-    localStorage.setItem('stasis_settings', JSON.stringify(state.settings));
-    
-    showNotification('Settings Saved', 'Your settings have been saved', 'success');
-}
-
-// ============================================
-// ROVER CONTROLS
-// ============================================
-function startPatrol() {
-    if (!checkPermissionAndAlert('START_PATROL', 'start patrol')) return;
-    sendCommand('start_patrol');
-}
-
-function stopPatrol() {
-    if (!checkPermissionAndAlert('STOP_PATROL', 'stop patrol')) return;
-    sendCommand('stop_patrol');
-}
-
-function returnHome() {
-    if (!checkPermissionAndAlert('RETURN_HOME', 'return rover home')) return;
-    sendCommand('return_home');
-}
-
-function emergencyStop() {
-    sendCommand('emergency_stop');
-    showNotification('Emergency Stop', 'Rover has been stopped!', 'error');
-}
-
-// ============================================
-// UTILITY FUNCTIONS
-// ============================================
-function formatTime(date) {
-    if (typeof date === 'string') date = new Date(date);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-// ============================================
-// CSS ANIMATIONS (injected)
-// ============================================
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideIn {
-        from { transform: translateX(100%); opacity: 0; }
-        to { transform: translateX(0); opacity: 1; }
-    }
-    @keyframes slideOut {
-        from { transform: translateX(0); opacity: 1; }
-        to { transform: translateX(100%); opacity: 0; }
-    }
-    .message { margin-bottom: 10px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 5px; }
-    .message-header { display: flex; justify-content: space-between; margin-bottom: 5px; }
-    .message-time { font-size: 11px; color: #888; }
-    .message-content { font-size: 14px; }
-`;
-document.head.appendChild(style);
-
-// ============================================
-// CONFIGURATION
-// ============================================
-const CONFIG = {
-    API_URL: 'http://localhost:5000/api',
-    WS_URL: 'ws://localhost:5000/ws',
-    MAP_CENTER: [11.0168, 76.9558], // Default center (Coimbatore, India)
-    MAP_ZOOM: 15,
-    DEFAULT_PATROL_RADIUS: 250, // meters
-    MAX_PATROL_RADIUS: 1000, // meters
-    STREAM_URL: 'http://192.168.4.1:81/stream',
-    RECONNECT_INTERVAL: 5000
-};
-
-// ============================================
-// ROLES & PERMISSIONS
-// ============================================
-const ROLES = {
-    ADMIN: { id: 4, name: 'Admin', color: '#ff4444', level: 4 },
-    MODERATOR: { id: 3, name: 'Moderator', color: '#00d4ff', level: 3 },
-    OFFICER: { id: 2, name: 'Officer', color: '#00ff88', level: 2 },
-    SUPPORTER: { id: 1, name: 'Supporter', color: '#888888', level: 1 }
-};
-
-const PERMISSIONS = {
-    CONTROL_ROVER: ['Admin', 'Moderator'],
-    EDIT_FENCING: ['Admin', 'Moderator'],
-    VIEW_STREAM: ['Admin', 'Moderator', 'Officer'],
-    SEND_CHAT: ['Admin', 'Moderator', 'Officer', 'Supporter'],
-    VIEW_TELEMETRY: ['Admin', 'Moderator', 'Officer'],
-    MANAGE_USERS: ['Admin'],
-    EDIT_SETTINGS: ['Admin', 'Moderator'],
-    VIEW_ALERTS: ['Admin', 'Moderator', 'Officer'],
-    START_PATROL: ['Admin', 'Moderator'],
-    STOP_PATROL: ['Admin', 'Moderator'],
-    RETURN_HOME: ['Admin', 'Moderator']
-};
-
-// ============================================
-// TEAM MEMBERS
-// ============================================
-const TEAM_MEMBERS = {
-    main: [
-        { name: 'Kartik', nickname: 'Shadow', role: 'Admin', position: 'Leader and Initiative' },
-        { name: 'Harish', nickname: 'Phoenix', role: 'Moderator', position: 'Team Member' },
-        { name: 'Ryan Ahmed', nickname: 'Blaze', role: 'Officer', position: 'Team Member' },
-        { name: 'Mohaideen Ijaz', nickname: 'Storm', role: 'Officer', position: 'Team Member' },
-        { name: 'Swethen', nickname: 'Frost', role: 'Officer', position: 'Team Member' }
-    ],
-    supporters: [
-        { name: 'Stephen', nickname: 'Echo', role: 'Supporter', position: 'Team Member' },
-        { name: 'Krish', nickname: 'Nova', role: 'Supporter', position: 'Team Member' },
-        { name: 'Inba', nickname: 'Spark', role: 'Supporter', position: 'Team Member' },
-        { name: 'Baavasri', nickname: 'Viper', role: 'Supporter', position: 'Team Member' },
-        { name: 'Janane', nickname: 'Raven', role: 'Supporter', position: 'Team Member' }
-    ]
-};
-
-// ============================================
-// APPLICATION STATE
-// ============================================
-let state = {
-    currentUser: null,
-    rover: {
-        connected: false,
-        position: null,
-        battery: 0,
-        speed: 0,
-        heading: 0,
-        status: 'idle',
-        patrolMode: 'auto',
-        fencePoints: [],
-        homePosition: null
-    },
-    map: null,
-    fencingMap: null,
-    roverMarker: null,
-    fencePolygon: null,
-    fencePoints: [],
-    fencingMode: false,
-    ws: null,
-    chat: {
-        channels: [
-            { id: 'general', name: 'General', icon: 'fa-hashtag' },
-            { id: 'alerts', name: 'Alerts', icon: 'fa-exclamation-triangle' },
-            { id: 'patrol', name: 'Patrol Updates', icon: 'fa-route' }
-        ],
-        activeChannel: 'general',
-        messages: {}
-    },
-    settings: {
-        patrolRadius: CONFIG.DEFAULT_PATROL_RADIUS,
-        streamEnabled: true,
-        notificationsEnabled: true,
-        chatRestricted: false,
-        autoReturnHome: true,
-        reportEmails: []
-    },
-    notifications: []
-};
-
-// ============================================
-// INITIALIZATION
-// ============================================
-document.addEventListener('DOMContentLoaded', () => {
-    initApp();
-});
-
-function initApp() {
-    // Check for saved session
-    const savedUser = localStorage.getItem('stasis_user');
-    if (savedUser) {
-        state.currentUser = JSON.parse(savedUser);
-        showApp();
-    } else {
-        showLoginModal();
-    }
-    
-    // Initialize event listeners
-    initEventListeners();
-}
-
-function initEventListeners() {
-    // Navigation
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.addEventListener('click', (e) => {
-            e.preventDefault();
-            const view = item.dataset.view;
-            if (view) switchView(view);
-        });
-    });
-    
-    // Login form
-    document.getElementById('loginForm')?.addEventListener('submit', handleLogin);
-    
-    // Chat
-    document.getElementById('chatInput')?.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendChatMessage();
-    });
-    
-    document.getElementById('sendChatBtn')?.addEventListener('click', sendChatMessage);
-    
-    // Settings
-    document.getElementById('saveSettingsBtn')?.addEventListener('click', saveSettings);
-    
-    // Notifications
-    document.getElementById('notifBtn')?.addEventListener('click', toggleNotifications);
-    
-    // Logout
-    document.getElementById('logoutBtn')?.addEventListener('click', handleLogout);
-    
-    // Fencing controls
-    document.getElementById('startFencingBtn')?.addEventListener('click', startFencingMode);
-    document.getElementById('clearFenceBtn')?.addEventListener('click', clearFence);
-    document.getElementById('saveFenceBtn')?.addEventListener('click', saveFence);
-    
-    // Patrol radius slider
-    document.getElementById('patrolRadiusSlider')?.addEventListener('input', (e) => {
-        document.getElementById('radiusValue').textContent = e.target.value + 'm';
-        state.settings.patrolRadius = parseInt(e.target.value);
-    });
-}
-
-// ============================================
-// AUTHENTICATION
-// ============================================
-function showLoginModal() {
-    document.getElementById('loginModal')?.classList.remove('hidden');
-}
-
-function hideLoginModal() {
-    document.getElementById('loginModal')?.classList.add('hidden');
-}
-
-function handleLogin(e) {
-    e.preventDefault();
-    
-    const email = document.getElementById('loginEmail').value;
-    const password = document.getElementById('loginPassword').value;
-    
-    // Find user in team members
-    let user = null;
-    let role = ROLES.SUPPORTER;
-    
-    // Check main team
-    for (const member of TEAM_MEMBERS.main) {
-        if (email.toLowerCase().includes(member.name.toLowerCase())) {
-            user = member;
-            role = ROLES[member.role.toUpperCase()] || ROLES.OFFICER;
-            break;
-        }
-    }
-    
-    // Check supporters if not found in main
-    if (!user) {
-        for (const member of TEAM_MEMBERS.supporters) {
-            if (email.toLowerCase().includes(member.name.toLowerCase())) {
-                user = member;
-                role = ROLES.SUPPORTER;
-                break;
-            }
-        }
-    }
-    
-    // Demo mode - allow any email
-    if (!user) {
-        user = { name: email.split('@')[0], role: 'Supporter', position: 'Guest' };
-        role = ROLES.SUPPORTER;
-    }
-    
-    state.currentUser = {
-        ...user,
-        email: email,
-        role: role
-    };
-    
-    localStorage.setItem('stasis_user', JSON.stringify(state.currentUser));
-    hideLoginModal();
-    showApp();
-}
-
-function handleLogout() {
-    state.currentUser = null;
-    localStorage.removeItem('stasis_user');
-    disconnectWebSocket();
-    showLoginModal();
-}
-
-function showApp() {
-    updateUserPanel();
-    initMaps();
-    connectWebSocket();
-    initChat();
-    initSettings();
-    initTeamView();
-    startTelemetrySimulation();
-}
-
-// ============================================
-// PERMISSIONS
-// ============================================
-function hasPermission(permission) {
-    if (!state.currentUser) return false;
-    
-    const allowedRoles = PERMISSIONS[permission];
-    if (!allowedRoles) return false;
-    
-    return allowedRoles.includes(state.currentUser.role.name);
-}
-
-function checkPermissionAndAlert(permission, action) {
-    if (!hasPermission(permission)) {
-        showNotification('Permission Denied', `You don't have permission to ${action}`, 'error');
-        return false;
-    }
-    return true;
-}
-
-// ============================================
-// NAVIGATION
-// ============================================
-function switchView(viewName) {
-    // Update nav items
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.classList.toggle('active', item.dataset.view === viewName);
-    });
-    
-    // Update views
-    document.querySelectorAll('.view').forEach(view => {
-        view.classList.toggle('active', view.id === `${viewName}View`);
-    });
-    
-    // Initialize map if switching to map or fencing view
-    if (viewName === 'map' && !state.map) {
-        setTimeout(() => initMainMap(), 100);
-    }
-    if (viewName === 'fencing' && !state.fencingMap) {
-        setTimeout(() => initFencingMap(), 100);
-    }
-}
-
-// ============================================
-// MAPS
-// ============================================
-function initMaps() {
-    // Initialize mini map on dashboard
-    setTimeout(() => initMiniMap(), 100);
-}
-
-function initMiniMap() {
-    const miniMapEl = document.getElementById('miniMap');
-    if (!miniMapEl || state.miniMap) return;
-    
-    state.miniMap = L.map('miniMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.miniMap);
-    
-    // Add rover marker
-    state.roverMarker = L.marker(CONFIG.MAP_CENTER, {
-        icon: createRoverIcon()
-    }).addTo(state.miniMap);
-}
-
-function initMainMap() {
-    const mainMapEl = document.getElementById('mainMap');
-    if (!mainMapEl || state.map) return;
-    
-    state.map = L.map('mainMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.map);
-    
-    // Add rover marker
-    if (!state.roverMarker) {
-        state.roverMarker = L.marker(state.rover.position || CONFIG.MAP_CENTER, {
-            icon: createRoverIcon()
-        }).addTo(state.map);
-    } else {
-        state.roverMarker.addTo(state.map);
-    }
-    
-    // Add home marker
-    if (state.rover.homePosition) {
-        L.marker(state.rover.homePosition, {
-            icon: createHomeIcon()
-        }).addTo(state.map);
-    }
-    
-    // Add fence polygon if exists
-    if (state.rover.fencePoints.length > 2) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff',
-            fillColor: '#00d4ff',
-            fillOpacity: 0.2
-        }).addTo(state.map);
-    }
-}
-
-function initFencingMap() {
-    const fencingMapEl = document.getElementById('fencingMap');
-    if (!fencingMapEl || state.fencingMap) return;
-    
-    state.fencingMap = L.map('fencingMap').setView(CONFIG.MAP_CENTER, CONFIG.MAP_ZOOM);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(state.fencingMap);
-    
-    // Add click handler for fencing
-    state.fencingMap.on('click', handleFenceMapClick);
-    
-    // Add existing fence points
-    if (state.rover.fencePoints.length > 0) {
-        state.fencePolygon = L.polygon(state.rover.fencePoints, {
-            color: '#00d4ff',
-            fillColor: '#00d4ff',
-            fillOpacity: 0.2
-        }).addTo(state.fencingMap);
-        
-        state.fencePoints = state.rover.fencePoints.map(p => 
-            L.marker(p, { icon: createPointIcon() }).addTo(state.fencingMap)
-        );
-    }
-}
-
-function createRoverIcon() {
-    return L.divIcon({
-        className: 'rover-marker',
-        html: '<div style="background:#00d4ff;width:20px;height:20px;border-radius:50%;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.5);"></div>',
-        iconSize: [20, 20],
-        iconAnchor: [10, 10]
-    });
-}
-
-function createHomeIcon() {
-    return L.divIcon({
-        className: 'home-marker',
-        html: '<div style="background:#00ff88;width:16px;height:16px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [16, 16],
-        iconAnchor: [8, 8]
-    });
-}
-
-function createPointIcon() {
-    return L.divIcon({
-        className: 'fence-point',
-        html: '<div style="background:#ff4444;width:12px;height:12px;border-radius:50%;border:2px solid white;"></div>',
-        iconSize: [12, 12],
-        iconAnchor: [6, 6]
-    });
-}
-
-function updateRoverPosition(lat, lng) {
-    state.rover.position = [lat, lng];
-    
-    if (state.roverMarker) {
-        state.roverMarker.setLatLng([lat, lng]);
-    }
-    
-    // Update mini map
-    if (state.miniMap) {
-        state.miniMap.panTo([lat, lng]);
-    }
-    
-    // Update main map
-    if (state.map) {
-        state.map.panTo([lat, lng]);
-    }
-}
-
-// ============================================
-// FENCING
-// ============================================
-function startFencingMode() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'edit patrol fencing')) return;
-    
-    state.fencingMode = true;
-    showNotification('Fencing Mode', 'Click on the map to add fence points', 'info');
-    
-    if (state.fencingMap) {
-        state.fencingMap.getContainer().style.cursor = 'crosshair';
-    }
-}
-
-function handleFenceMapClick(e) {
-    if (!state.fencingMode) return;
-    
-    const point = [e.latlng.lat, e.latlng.lng];
-    
-    // Add marker
-    const marker = L.marker(point, { icon: createPointIcon() }).addTo(state.fencingMap);
-    state.fencePoints.push(marker);
-    
-    // Update polygon
-    updateFencePolygon();
-}
-
-function updateFencePolygon() {
-    // Remove existing polygon
-    if (state.fencePolygon) {
-        state.fencingMap.removeLayer(state.fencePolygon);
-    }
-    
-    // Get points
-    const points = state.fencePoints.map(m => m.getLatLng());
-    
-    if (points.length > 2) {
-        state.fencePolygon = L.polygon(points, {
-            color: '#00d4ff',
-            fillColor: '#00d4ff',
-            fillOpacity: 0.2
-        }).addTo(state.fencingMap);
-    }
-    
-    // Update info
-    updateFencingInfo();
-}
-
-function updateFencingInfo() {
-    const points = state.fencePoints.length;
-    const area = state.fencePolygon ? calculatePolygonArea(state.fencePolygon) : 0;
-    
-    document.getElementById('fencePointCount').textContent = points;
-    document.getElementById('fenceArea').textContent = area.toFixed(2) + ' m²';
-}
-
-function calculatePolygonArea(polygon) {
-    const latlngs = polygon.getLatLngs()[0];
-    let area = 0;
-    
-    for (let i = 0; i < latlngs.length; i++) {
-        const j = (i + 1) % latlngs.length;
-        area += latlngs[i].lat * latlngs[j].lng;
-        area -= latlngs[j].lat * latlngs[i].lng;
-    }
-    
-    return Math.abs(area / 2) * 111319.9 * 111319.9; // Convert to m²
-}
-
-function clearFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'clear patrol fencing')) return;
-    
-    // Remove markers
-    state.fencePoints.forEach(m => state.fencingMap.removeLayer(m));
-    state.fencePoints = [];
-    
-    // Remove polygon
-    if (state.fencePolygon) {
-        state.fencingMap.removeLayer(state.fencePolygon);
-        state.fencePolygon = null;
-    }
-    
-    updateFencingInfo();
-    showNotification('Fence Cleared', 'Patrol fence has been cleared', 'success');
-}
-
-function saveFence() {
-    if (!checkPermissionAndAlert('EDIT_FENCING', 'save patrol fencing')) return;
-    
-    if (state.fencePoints.length < 3) {
-        showNotification('Invalid Fence', 'At least 3 points are required', 'error');
-        return;
-    }
-    
-    state.rover.fencePoints = state.fencePoints.map(m => [m.getLatLng().lat, m.getLatLng().lng]);
-    
-    // Send to server
-    sendCommand('set_fence', { points: state.rover.fencePoints });
-    
-    showNotification('Fence Saved', 'Patrol fence has been saved and sent to rover', 'success');
-}
-
-// ============================================
-// WEBSOCKET CONNECTION
-// ============================================
-function connectWebSocket() {
-    if (state.ws) {
-        state.ws.close();
-    }
-    
-    try {
-        state.ws = new WebSocket(CONFIG.WS_URL);
-        
-        state.ws.onopen = () => {
-            console.log('WebSocket connected');
-            updateConnectionStatus(true);
-            
-            // Authenticate
-            state.ws.send(JSON.stringify({
-                type: 'auth',
-                user: state.currentUser
-            }));
-        };
-        
-        state.ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            handleWebSocketMessage(data);
-        };
-        
-        state.ws.onclose = () => {
-            console.log('WebSocket disconnected');
-            updateConnectionStatus(false);
-            
-            // Attempt reconnect
-            setTimeout(connectWebSocket, CONFIG.RECONNECT_INTERVAL);
-        };
-        
-        state.ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-        };
-    } catch (error) {
-        console.error('Failed to connect WebSocket:', error);
-        // Use simulation mode
-        startTelemetrySimulation();
-    }
-}
-
-function disconnectWebSocket() {
-    if (state.ws) {
-        state.ws.close();
-        state.ws = null;
-    }
-}
-
-function handleWebSocketMessage(data) {
-    switch (data.type) {
-        case 'telemetry':
-            handleTelemetry(data.payload);
-            break;
-        case 'chat':
-            handleChatMessage(data.payload);
-            break;
-        case 'alert':
-            handleAlert(data.payload);
-            break;
-        case 'user_joined':
-            handleUserJoined(data.payload);
-            break;
-        case 'user_left':
-            handleUserLeft(data.payload);
-            break;
-    }
-}
-
-function sendCommand(command, params = {}) {
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({
-            type: 'command',
-            command: command,
-            params: params,
-            user: state.currentUser
-        }));
-    } else {
-        // Simulation mode
-        console.log('Command (simulated):', command, params);
-        simulateCommand(command, params);
-    }
-}
-
-// ============================================
-// TELEMETRY
-// ============================================
-function handleTelemetry(data) {
-    // Update rover state
-    state.rover.battery = data.battery || state.rover.battery;
-    state.rover.speed = data.speed || state.rover.speed;
-    state.rover.heading = data.heading || state.rover.heading;
-    state.rover.status = data.status || state.rover.status;
-    
-    if (data.gps) {
-        updateRoverPosition(data.gps.lat, data.gps.lng);
-    }
-    
-    // Update UI
-    updateDashboard();
-}
-
-function updateDashboard() {
-    // Battery
-    const batteryEl = document.getElementById('batteryLevel');
-    if (batteryEl) {
-        batteryEl.textContent = state.rover.battery + '%';
-        batteryEl.className = state.rover.battery < 20 ? 'text-danger' : 
-                              state.rover.battery < 50 ? 'text-warning' : '';
-    }
-    
-    // Speed
-    const speedEl = document.getElementById('speedValue');
-    if (speedEl) speedEl.textContent = state.rover.speed.toFixed(1) + ' m/s';
-    
-    // Status
-    const statusEl = document.getElementById('roverStatus');
-    if (statusEl) {
-        statusEl.textContent = state.rover.status.toUpperCase();
-        statusEl.className = state.rover.status === 'patrolling' ? 'text-success' :
-                            state.rover.status === 'returning' ? 'text-warning' : '';
-    }
-    
-    // Heading
-    const headingEl = document.getElementById('headingValue');
-    if (headingEl) headingEl.textContent = state.rover.heading + '°';
-}
-
-function updateConnectionStatus(connected) {
-    state.rover.connected = connected;
-    
-    const statusDot = document.querySelector('.status-dot');
-    const statusText = document.querySelector('.connection-status span');
-    
-    if (statusDot) {
-        statusDot.style.background = connected ? '#00ff88' : '#ff4444';
-    }
-    
-    if (statusText) {
-        statusText.textContent = connected ? 'Connected' : 'Disconnected';
-    }
-}
-
-// ============================================
-// SIMULATION MODE
-// ============================================
-let simulationInterval = null;
-
-function startTelemetrySimulation() {
-    if (simulationInterval) return;
-    
-    // Set initial position
-    state.rover.position = CONFIG.MAP_CENTER;
-    state.rover.homePosition = CONFIG.MAP_CENTER;
-    state.rover.battery = 85;
-    state.rover.speed = 0;
-    state.rover.heading = 0;
-    state.rover.status = 'idle';
-    state.rover.connected = true;
-    
-    updateConnectionStatus(true);
-    updateDashboard();
-    
-    // Simulate telemetry updates
-    simulationInterval = setInterval(() => {
-        if (state.rover.status === 'patrolling') {
-            // Simulate movement
-            const lat = state.rover.position[0] + (Math.random() - 0.5) * 0.0005;
-            const lng = state.rover.position[1] + (Math.random() - 0.5) * 0.0005;
-            updateRoverPosition(lat, lng);
-            
-            state.rover.speed = 0.5 + Math.random() * 1.5;
-            state.rover.heading = Math.floor(Math.random() * 360);
-        }
-        
-        // Simulate battery drain
-        if (state.rover.status !== 'idle' && state.rover.status !== 'charging') {
-            state.rover.battery = Math.max(0, state.rover.battery - 0.01);
-        }
-        
-        updateDashboard();
-    }, 1000);
-}
-
-function simulateCommand(command, params) {
-    switch (command) {
-        case 'start_patrol':
-            state.rover.status = 'patrolling';
-            showNotification('Patrol Started', 'Rover is now patrolling', 'success');
-            break;
-        case 'stop_patrol':
-            state.rover.status = 'idle';
-            state.rover.speed = 0;
-            showNotification('Patrol Stopped', 'Rover has stopped', 'info');
-            break;
-        case 'return_home':
-            state.rover.status = 'returning';
-            showNotification('Returning Home', 'Rover is returning to base', 'info');
-            setTimeout(() => {
-                state.rover.status = 'idle';
-                state.rover.position = state.rover.homePosition;
-                updateRoverPosition(state.rover.homePosition[0], state.rover.homePosition[1]);
-                showNotification('Home Reached', 'Rover has returned to base', 'success');
-            }, 5000);
-            break;
-        case 'set_fence':
-            state.rover.fencePoints = params.points;
-            showNotification('Fence Updated', 'Patrol fence has been updated', 'success');
-            break;
-    }
-    
-    updateDashboard();
-}
-
-// ============================================
-// CHAT
-// ============================================
-function initChat() {
-    // Initialize messages for each channel
-    state.chat.channels.forEach(channel => {
-        state.chat.messages[channel.id] = [];
-    });
-    
-    // Add welcome message
-    state.chat.messages.general.push({
-        id: Date.now(),
-        user: 'System',
-        role: 'Admin',
-        content: 'Welcome to Stasis Sentinel Chat!',
-        timestamp: new Date()
-    });
-    
-    renderChannels();
-    renderMessages();
-}
-
-function renderChannels() {
-    const channelsEl = document.getElementById('chatChannels');
-    if (!channelsEl) return;
-    
-    channelsEl.innerHTML = state.chat.channels.map(channel => `
-        <div class="channel ${channel.id === state.chat.activeChannel ? 'active' : ''}" 
-             data-channel="${channel.id}">
-            <i class="fas ${channel.icon}"></i>
-            <span>${channel.name}</span>
-        </div>
-    `).join('');
-    
-    // Add click handlers
-    channelsEl.querySelectorAll('.channel').forEach(el => {
-        el.addEventListener('click', () => {
-            state.chat.activeChannel = el.dataset.channel;
-            renderChannels();
-            renderMessages();
-        });
-    });
-}
-
-function renderMessages() {
-    const messagesEl = document.getElementById('chatMessages');
-    if (!messagesEl) return;
-    
-    const messages = state.chat.messages[state.chat.activeChannel] || [];
-    
-    if (messages.length === 0) {
-        messagesEl.innerHTML = '<div class="no-data">No messages yet</div>';
-        return;
-    }
-    
-    messagesEl.innerHTML = messages.map(msg => `
-        <div class="message">
-            <div class="message-header">
-                <span class="message-user" style="color: ${ROLES[msg.role]?.color || '#888'}">${msg.user}</span>
-                <span class="message-time">${formatTime(msg.timestamp)}</span>
-            </div>
-            <div class="message-content">${msg.content}</div>
-        </div>
-    `).join('');
-    
-    // Scroll to bottom
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-}
-
-function sendChatMessage() {
-    if (!checkPermissionAndAlert('SEND_CHAT', 'send chat messages')) return;
-    if (state.settings.chatRestricted && state.currentUser.role.level < 3) {
-        showNotification('Chat Restricted', 'Chat is currently restricted to moderators and above', 'error');
-        return;
-    }
-    
-    const input = document.getElementById('chatInput');
-    const content = input.value.trim();
-    
-    if (!content) return;
-    
-    const message = {
-        id: Date.now(),
-        user: state.currentUser.name,
-        role: state.currentUser.role.name,
-        content: content,
-        timestamp: new Date()
-    };
-    
-    // Add to local messages
-    state.chat.messages[state.chat.activeChannel].push(message);
-    
-    // Send via WebSocket
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({
-            type: 'chat',
-            channel: state.chat.activeChannel,
-            message: message
-        }));
-    }
-    
-    input.value = '';
-    renderMessages();
-}
-
-function handleChatMessage(data) {
-    if (!state.chat.messages[data.channel]) {
-        state.chat.messages[data.channel] = [];
-    }
-    
-    state.chat.messages[data.channel].push(data.message);
-    
-    if (data.channel === state.chat.activeChannel) {
-        renderMessages();
-    }
-    
-    // Show notification if not in chat view
-    showNotification(`New message in ${data.channel}`, `${data.message.user}: ${data.message.content}`, 'info');
-}
-
-// ============================================
-// ALERTS
-// ============================================
-function handleAlert(data) {
-    state.notifications.unshift({
-        id: Date.now(),
-        type: data.type || 'info',
-        title: data.title,
-        message: data.message,
-        timestamp: new Date()
-    });
-    
-    showNotification(data.title, data.message, data.type);
-    updateNotificationBadge();
-}
-
-function showNotification(title, message, type = 'info') {
-    // Create toast notification
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `
-        <strong>${title}</strong>
-        <p>${message}</p>
-    `;
-    
-    toast.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: ${type === 'error' ? '#ff4444' : type === 'success' ? '#00ff88' : '#00d4ff'};
-        color: ${type === 'success' || type === 'info' ? '#1a1a2e' : 'white'};
-        padding: 15px 20px;
-        border-radius: 8px;
-        z-index: 10000;
-        animation: slideIn 0.3s ease;
-    `;
-    
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.style.animation = 'slideOut 0.3s ease';
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
-}
-
-function updateNotificationBadge() {
-    const badge = document.querySelector('.notif-badge');
-    if (badge) {
-        badge.textContent = state.notifications.length;
-        badge.style.display = state.notifications.length > 0 ? 'block' : 'none';
-    }
-}
-
-function toggleNotifications() {
-    const panel = document.getElementById('notificationPanel');
-    if (panel) {
-        panel.classList.toggle('show');
-    }
-}
-
-// ============================================
-// USER MANAGEMENT
-// ============================================
-function updateUserPanel() {
-    const nameEl = document.querySelector('.user-name');
-    const roleEl = document.querySelector('.user-role');
-    
-    if (nameEl) nameEl.textContent = state.currentUser.name;
-    if (roleEl) roleEl.textContent = state.currentUser.role.name;
-}
-
-function handleUserJoined(data) {
-    showNotification('User Joined', `${data.user.name} has joined`, 'info');
-}
-
-function handleUserLeft(data) {
-    showNotification('User Left', `${data.user.name} has left`, 'info');
-}
-
-// ============================================
-// TEAM VIEW
-// ============================================
-function initTeamView() {
-    renderTeamMembers();
-    renderPermissionsTable();
-}
-
-function renderTeamMembers() {
-    const mainTeamEl = document.getElementById('mainTeamMembers');
-    const supportersEl = document.getElementById('supporterMembers');
-    
-    if (mainTeamEl) {
-        mainTeamEl.innerHTML = TEAM_MEMBERS.main.map(member => createMemberCard(member)).join('');
-    }
-    
-    if (supportersEl) {
-        supportersEl.innerHTML = TEAM_MEMBERS.supporters.map(member => createMemberCard(member)).join('');
-    }
-}
-
-function createMemberCard(member) {
-    const role = ROLES[member.role.toUpperCase()] || ROLES.SUPPORTER;
-    return `
-        <div class="team-card">
-            <div class="member-avatar">
-                <i class="fas fa-user"></i>
-            </div>
-            <div class="member-info">
-                <div class="member-name">${member.name}</div>
-                <div class="member-role">${member.position}</div>
-            </div>
-            <span class="rank-badge ${member.role.toLowerCase()}">${role.name}</span>
-        </div>
-    `;
-}
-
-function renderPermissionsTable() {
-    const tableEl = document.getElementById('permissionsTable');
-    if (!tableEl) return;
-    
-    const permissions = Object.keys(PERMISSIONS);
-    const roles = ['Admin', 'Moderator', 'Officer', 'Supporter'];
-    
-    tableEl.innerHTML = `
-        <table>
-            <thead>
-                <tr>
-                    <th>Permission</th>
-                    ${roles.map(r => `<th>${r}</th>`).join('')}
-                </tr>
-            </thead>
-            <tbody>
-                ${permissions.map(perm => `
-                    <tr>
-                        <td>${formatPermission(perm)}</td>
-                        ${roles.map(role => `
-                            <td class="${PERMISSIONS[perm].includes(role) ? 'text-success' : 'text-danger'}">
-                                <i class="fas ${PERMISSIONS[perm].includes(role) ? 'fa-check' : 'fa-times'}"></i>
-                            </td>
-                        `).join('')}
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
-}
-
-function formatPermission(perm) {
-    return perm.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-}
-
-// ============================================
-// SETTINGS
-// ============================================
-function initSettings() {
-    // Load saved settings
-    const savedSettings = localStorage.getItem('stasis_settings');
-    if (savedSettings) {
-        state.settings = { ...state.settings, ...JSON.parse(savedSettings) };
-    }
-    
-    // Update UI
-    const radiusSlider = document.getElementById('patrolRadiusSlider');
-    if (radiusSlider) {
-        radiusSlider.value = state.settings.patrolRadius;
-        document.getElementById('radiusValue').textContent = state.settings.patrolRadius + 'm';
-    }
-    
-    // Checkboxes
-    document.getElementById('streamEnabled').checked = state.settings.streamEnabled;
-    document.getElementById('notificationsEnabled').checked = state.settings.notificationsEnabled;
-    document.getElementById('chatRestricted').checked = state.settings.chatRestricted;
-    document.getElementById('autoReturnHome').checked = state.settings.autoReturnHome;
-}
-
-function saveSettings() {
-    if (!checkPermissionAndAlert('EDIT_SETTINGS', 'edit settings')) return;
-    
-    // Get values from form
-    state.settings.patrolRadius = parseInt(document.getElementById('patrolRadiusSlider').value);
-    state.settings.streamEnabled = document.getElementById('streamEnabled').checked;
-    state.settings.notificationsEnabled = document.getElementById('notificationsEnabled').checked;
-    state.settings.chatRestricted = document.getElementById('chatRestricted').checked;
-    state.settings.autoReturnHome = document.getElementById('autoReturnHome').checked;
-    
-    // Save to localStorage
-    localStorage.setItem('stasis_settings', JSON.stringify(state.settings));
-    
-    showNotification('Settings Saved', 'Your settings have been saved', 'success');
-}
-
-// ============================================
-// ROVER CONTROLS
-// ============================================
-function startPatrol() {
-    if (!checkPermissionAndAlert('START_PATROL', 'start patrol')) return;
-    sendCommand('start_patrol');
-}
-
-function stopPatrol() {
-    if (!checkPermissionAndAlert('STOP_PATROL', 'stop patrol')) return;
-    sendCommand('stop_patrol');
-}
-
-function returnHome() {
-    if (!checkPermissionAndAlert('RETURN_HOME', 'return rover home')) return;
-    sendCommand('return_home');
-}
-
-function emergencyStop() {
-    sendCommand('emergency_stop');
-    showNotification('Emergency Stop', 'Rover has been stopped!', 'error');
-}
-
-// ============================================
-// UTILITY FUNCTIONS
-// ============================================
-function formatTime(date) {
-    if (typeof date === 'string') date = new Date(date);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-// ============================================
-// CSS ANIMATIONS (injected)
-// ============================================
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideIn {
-        from { transform: translateX(100%); opacity: 0; }
-        to { transform: translateX(0); opacity: 1; }
-    }
-    @keyframes slideOut {
-        from { transform: translateX(0); opacity: 1; }
-        to { transform: translateX(100%); opacity: 0; }
-    }
-    .message { margin-bottom: 10px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 5px; }
-    .message-header { display: flex; justify-content: space-between; margin-bottom: 5px; }
-    .message-time { font-size: 11px; color: #888; }
-    .message-content { font-size: 14px; }
-`;
-document.head.appendChild(style);
-
-
+function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function toggleSidebar() {
+    var sidebar = document.querySelector('.sidebar');
+    if (sidebar) {
+        sidebar.classList.toggle('collapsed');
+    }
+}
+
+// ============================================
+// CSS ANIMATIONS
+// ============================================
+(function() {
+    var style = document.createElement('style');
+    style.textContent = 
+        '@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }' +
+        '@keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }' +
+        '.message { margin-bottom: 10px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 5px; }' +
+        '.message-header { display: flex; justify-content: space-between; margin-bottom: 5px; }' +
+        '.message-time { font-size: 11px; color: #888; }' +
+        '.message-content { font-size: 14px; }' +
+        '.toast p { margin: 5px 0 0 0; font-size: 13px; }' +
+        '.guest-note { font-size: 12px; color: #888; margin-top: 5px; }' +
+        '.login-info { background: rgba(0,212,255,0.1); padding: 10px; border-radius: 5px; margin-bottom: 15px; text-align: center; }' +
+        '.login-info p { margin: 0; font-size: 13px; color: #00d4ff; }' +
+        '.alert-item { padding: 10px; margin-bottom: 8px; border-radius: 5px; background: rgba(255,68,68,0.1); border-left: 3px solid #ff4444; }' +
+        '.alert-item.warning { background: rgba(255,165,0,0.1); border-left-color: orange; }' +
+        '.alert-header { display: flex; justify-content: space-between; margin-bottom: 5px; }' +
+        '.alert-title { font-weight: bold; font-size: 12px; }' +
+        '.alert-time { font-size: 10px; color: #888; }' +
+        '.alert-message { font-size: 11px; color: #ccc; }' +
+        '.no-messages { text-align: center; color: #666; padding: 20px; }' +
+        '.text-danger { color: #ff4444 !important; }' +
+        '.text-warning { color: #ffaa00 !important; }' +
+        '.text-success { color: #00ff88 !important; }' +
+        '.control-note { font-size: 12px; color: #888; margin-top: 10px; text-align: center; }';
+    document.head.appendChild(style);
+})();

@@ -13,6 +13,7 @@
    7. Maintains an in-memory alert history buffer.
    8. Provides configurable SMS recipients for alerts.
    9. Supports API key authentication for internet deployment.
+  10. WebSocket support for real-time chat and telemetry.
 
  API Endpoints:
    GET  /api/status    → Latest telemetry packet
@@ -28,9 +29,10 @@
    POST /api/config/sms → Update SMS recipients
    GET  /api/export/csv → Export telemetry as CSV
    GET  /api/export/json → Export telemetry as JSON
+   WS   /ws           → WebSocket for real-time chat and telemetry
 
  Required packages:
-   pip install flask flask-cors pyserial fpdf2
+   pip install flask flask-cors flask-socketio pyserial fpdf2 eventlet
 
  Usage:
    python3 station_monitor.py
@@ -53,6 +55,7 @@ from functools import wraps
 
 from flask import Flask, jsonify, request, send_from_directory, abort, Response, make_response
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room
 
 # ---------------------------------------------------------------------------
 # Try importing fpdf; if not installed, we will generate text reports instead.
@@ -698,6 +701,90 @@ def require_api_key(f):
 
 app = Flask(__name__)
 CORS(app, origins="*")  # Configure appropriately for production
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Chat storage
+chat_history = {
+    'general': [],
+    'alerts': [],
+    'patrol': []
+}
+MAX_CHAT_HISTORY = 100
+
+# Connected users
+connected_users = {}
+
+
+@socketio.on('connect')
+def handle_connect():
+    """Handle WebSocket connection."""
+    logger.info(f"Client connected: {request.sid}")
+    emit('connected', {'status': 'ok'})
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle WebSocket disconnection."""
+    user_id = None
+    for uid, sid in connected_users.items():
+        if sid == request.sid:
+            user_id = uid
+            break
+    if user_id:
+        del connected_users[user_id]
+        emit('user_left', {'user': user_id}, broadcast=True)
+    logger.info(f"Client disconnected: {request.sid}")
+
+
+@socketio.on('auth')
+def handle_auth(data):
+    """Authenticate user via WebSocket."""
+    user = data.get('user', {})
+    username = user.get('name', 'Guest')
+    connected_users[username] = request.sid
+    join_room('main')
+    emit('user_joined', {'user': username}, broadcast=True)
+    logger.info(f"User authenticated: {username}")
+
+
+@socketio.on('chat')
+def handle_chat(data):
+    """Handle incoming chat messages."""
+    channel = data.get('channel', 'general')
+    message = data.get('message', {})
+    
+    if channel not in chat_history:
+        chat_history[channel] = []
+    
+    chat_history[channel].append(message)
+    if len(chat_history[channel]) > MAX_CHAT_HISTORY:
+        chat_history[channel] = chat_history[channel][-MAX_CHAT_HISTORY:]
+    
+    emit('chat', {'channel': channel, 'message': message}, broadcast=True)
+    logger.info(f"Chat message in {channel}: {message.get('user')} - {message.get('content')}")
+
+
+@socketio.on('telemetry')
+def handle_telemetry(data):
+    """Broadcast telemetry to all clients."""
+    emit('telemetry', data, broadcast=True)
+
+
+# Broadcast function for use in other parts of the code
+def broadcast_telemetry(telemetry_data):
+    """Broadcast telemetry to all connected WebSocket clients."""
+    try:
+        socketio.emit('telemetry', telemetry_data, broadcast=True)
+    except Exception as e:
+        logger.error(f"Failed to broadcast telemetry: {e}")
+
+
+def broadcast_alert(alert_data):
+    """Broadcast alert to all connected WebSocket clients."""
+    try:
+        socketio.emit('alert', alert_data, broadcast=True)
+    except Exception as e:
+        logger.error(f"Failed to broadcast alert: {e}")
 
 
 @app.route("/api/status", methods=["GET"])
@@ -928,533 +1015,20 @@ def main():
     serial_thread.start()
     logger.info("Serial listener thread started.")
 
-    # Start Flask
-    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
+    # Start Flask with WebSocket support
+    logger.info("Starting Flask API + WebSocket on %s:%d", FLASK_HOST, FLASK_PORT)
     logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
+    logger.info("WebSocket endpoint: ws://%s:%d/ws", FLASK_HOST, FLASK_PORT)
     
-    app.run(
+    socketio.run(
+        app,
         host=FLASK_HOST,
         port=FLASK_PORT,
         debug=False,
         use_reloader=False,
+        allow_unsafe_werkzeug=True
     )
 
 
 if __name__ == "__main__":
     main()
-    command = body["cmd"].strip().upper()
-    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
-
-    if command not in valid_commands:
-        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
-
-    success = send_command_to_bridge(command)
-    if success:
-        return jsonify({"status": "ok", "command": command})
-    else:
-        return jsonify({"error": "Serial port not available"}), 503
-
-
-@app.route("/api/health", methods=["GET"])
-def api_health():
-    """System health check endpoint (no auth required)."""
-    serial_ok = serial_connection is not None and serial_connection.is_open
-    return jsonify({
-        "status":           "healthy",
-        "serial_connected": serial_ok,
-        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
-        "total_packets":    packet_counter,
-        "database":         DATABASE_PATH,
-        "uptime_note":      "Base station is running.",
-    })
-
-
-@app.route("/api/config", methods=["GET"])
-@require_api_key
-def api_get_config():
-    """Get current configuration."""
-    return jsonify(app_config)
-
-
-@app.route("/api/config", methods=["POST"])
-@require_api_key
-def api_update_config():
-    """Update configuration."""
-    global app_config
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "No configuration data provided"}), 400
-    
-    # Update configuration
-    for key in body:
-        if key in app_config:
-            app_config[key] = body[key]
-    
-    save_config()
-    return jsonify({"status": "ok", "config": app_config})
-
-
-@app.route("/api/config/sms", methods=["GET", "POST"])
-@require_api_key
-def api_sms_config():
-    """Get or update SMS recipients."""
-    if request.method == "GET":
-        return jsonify({"recipients": app_config.get("sms_recipients", [])})
-    
-    body = request.get_json(silent=True)
-    if not body or "recipients" not in body:
-        return jsonify({"error": "Missing 'recipients' field"}), 400
-    
-    app_config["sms_recipients"] = body["recipients"]
-    save_config()
-    
-    return jsonify({
-        "status": "ok",
-        "recipients": app_config["sms_recipients"]
-    })
-
-
-@app.route("/api/export/csv", methods=["GET"])
-@require_api_key
-def api_export_csv():
-    """Export telemetry data as CSV."""
-    try:
-        history = fetch_history(1000)
-        
-        output = io.StringIO()
-        writer = csv.writer(output)
-        
-        # Header
-        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
-        
-        # Data
-        for row in history:
-            writer.writerow([
-                row.get('timestamp', ''),
-                row.get('temp', ''),
-                row.get('bat', ''),
-                row.get('lat', ''),
-                row.get('lng', ''),
-                row.get('hazard', ''),
-                row.get('status', ''),
-                row.get('distance', ''),
-                row.get('accel_x', ''),
-                row.get('accel_y', '')
-            ])
-        
-        output.seek(0)
-        response = make_response(output.getvalue())
-        response.headers['Content-Type'] = 'text/csv'
-        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
-        return response
-    except Exception as e:
-        logger.error("Failed to export CSV: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/export/json", methods=["GET"])
-@require_api_key
-def api_export_json():
-    """Export telemetry data as JSON."""
-    try:
-        history = fetch_history(1000)
-        response = make_response(json.dumps(history, indent=2))
-        response.headers['Content-Type'] = 'application/json'
-        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
-        return response
-    except Exception as e:
-        logger.error("Failed to export JSON: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
-# ===========================================================================
-#  MAIN ENTRY POINT
-# ===========================================================================
-
-def main():
-    """Application entry point."""
-    print()
-    print("=" * 60)
-    print("  AERO SENTINEL - BASE STATION MONITOR")
-    print("  Starting up...")
-    print("=" * 60)
-    print()
-
-    # Load configuration
-    load_config()
-    
-    # Initialize the database
-    initialize_database()
-    ensure_report_directory()
-
-    # Cleanup old data
-    cleanup_old_data()
-
-    # Start serial listener
-    serial_thread = threading.Thread(
-        target=serial_listener_thread,
-        name="SerialListener",
-        daemon=True,
-    )
-    serial_thread.start()
-    logger.info("Serial listener thread started.")
-
-    # Start Flask
-    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
-    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
-    
-    app.run(
-        host=FLASK_HOST,
-        port=FLASK_PORT,
-        debug=False,
-        use_reloader=False,
-    )
-
-
-if __name__ == "__main__":
-    main()
-
-    command = body["cmd"].strip().upper()
-    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
-
-    if command not in valid_commands:
-        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
-
-    success = send_command_to_bridge(command)
-    if success:
-        return jsonify({"status": "ok", "command": command})
-    else:
-        return jsonify({"error": "Serial port not available"}), 503
-
-
-@app.route("/api/health", methods=["GET"])
-def api_health():
-    """System health check endpoint (no auth required)."""
-    serial_ok = serial_connection is not None and serial_connection.is_open
-    return jsonify({
-        "status":           "healthy",
-        "serial_connected": serial_ok,
-        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
-        "total_packets":    packet_counter,
-        "database":         DATABASE_PATH,
-        "uptime_note":      "Base station is running.",
-    })
-
-
-@app.route("/api/config", methods=["GET"])
-@require_api_key
-def api_get_config():
-    """Get current configuration."""
-    return jsonify(app_config)
-
-
-@app.route("/api/config", methods=["POST"])
-@require_api_key
-def api_update_config():
-    """Update configuration."""
-    global app_config
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "No configuration data provided"}), 400
-    
-    # Update configuration
-    for key in body:
-        if key in app_config:
-            app_config[key] = body[key]
-    
-    save_config()
-    return jsonify({"status": "ok", "config": app_config})
-
-
-@app.route("/api/config/sms", methods=["GET", "POST"])
-@require_api_key
-def api_sms_config():
-    """Get or update SMS recipients."""
-    if request.method == "GET":
-        return jsonify({"recipients": app_config.get("sms_recipients", [])})
-    
-    body = request.get_json(silent=True)
-    if not body or "recipients" not in body:
-        return jsonify({"error": "Missing 'recipients' field"}), 400
-    
-    app_config["sms_recipients"] = body["recipients"]
-    save_config()
-    
-    return jsonify({
-        "status": "ok",
-        "recipients": app_config["sms_recipients"]
-    })
-
-
-@app.route("/api/export/csv", methods=["GET"])
-@require_api_key
-def api_export_csv():
-    """Export telemetry data as CSV."""
-    try:
-        history = fetch_history(1000)
-        
-        output = io.StringIO()
-        writer = csv.writer(output)
-        
-        # Header
-        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
-        
-        # Data
-        for row in history:
-            writer.writerow([
-                row.get('timestamp', ''),
-                row.get('temp', ''),
-                row.get('bat', ''),
-                row.get('lat', ''),
-                row.get('lng', ''),
-                row.get('hazard', ''),
-                row.get('status', ''),
-                row.get('distance', ''),
-                row.get('accel_x', ''),
-                row.get('accel_y', '')
-            ])
-        
-        output.seek(0)
-        response = make_response(output.getvalue())
-        response.headers['Content-Type'] = 'text/csv'
-        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
-        return response
-    except Exception as e:
-        logger.error("Failed to export CSV: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/export/json", methods=["GET"])
-@require_api_key
-def api_export_json():
-    """Export telemetry data as JSON."""
-    try:
-        history = fetch_history(1000)
-        response = make_response(json.dumps(history, indent=2))
-        response.headers['Content-Type'] = 'application/json'
-        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
-        return response
-    except Exception as e:
-        logger.error("Failed to export JSON: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
-# ===========================================================================
-#  MAIN ENTRY POINT
-# ===========================================================================
-
-def main():
-    """Application entry point."""
-    print()
-    print("=" * 60)
-    print("  AERO SENTINEL - BASE STATION MONITOR")
-    print("  Starting up...")
-    print("=" * 60)
-    print()
-
-    # Load configuration
-    load_config()
-    
-    # Initialize the database
-    initialize_database()
-    ensure_report_directory()
-
-    # Cleanup old data
-    cleanup_old_data()
-
-    # Start serial listener
-    serial_thread = threading.Thread(
-        target=serial_listener_thread,
-        name="SerialListener",
-        daemon=True,
-    )
-    serial_thread.start()
-    logger.info("Serial listener thread started.")
-
-    # Start Flask
-    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
-    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
-    
-    app.run(
-        host=FLASK_HOST,
-        port=FLASK_PORT,
-        debug=False,
-        use_reloader=False,
-    )
-
-
-if __name__ == "__main__":
-    main()
-    command = body["cmd"].strip().upper()
-    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
-
-    if command not in valid_commands:
-        return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400
-
-    success = send_command_to_bridge(command)
-    if success:
-        return jsonify({"status": "ok", "command": command})
-    else:
-        return jsonify({"error": "Serial port not available"}), 503
-
-
-@app.route("/api/health", methods=["GET"])
-def api_health():
-    """System health check endpoint (no auth required)."""
-    serial_ok = serial_connection is not None and serial_connection.is_open
-    return jsonify({
-        "status":           "healthy",
-        "serial_connected": serial_ok,
-        "rover_online":     (time.time() - last_telemetry_time) < TELEMETRY_TIMEOUT,
-        "total_packets":    packet_counter,
-        "database":         DATABASE_PATH,
-        "uptime_note":      "Base station is running.",
-    })
-
-
-@app.route("/api/config", methods=["GET"])
-@require_api_key
-def api_get_config():
-    """Get current configuration."""
-    return jsonify(app_config)
-
-
-@app.route("/api/config", methods=["POST"])
-@require_api_key
-def api_update_config():
-    """Update configuration."""
-    global app_config
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "No configuration data provided"}), 400
-    
-    # Update configuration
-    for key in body:
-        if key in app_config:
-            app_config[key] = body[key]
-    
-    save_config()
-    return jsonify({"status": "ok", "config": app_config})
-
-
-@app.route("/api/config/sms", methods=["GET", "POST"])
-@require_api_key
-def api_sms_config():
-    """Get or update SMS recipients."""
-    if request.method == "GET":
-        return jsonify({"recipients": app_config.get("sms_recipients", [])})
-    
-    body = request.get_json(silent=True)
-    if not body or "recipients" not in body:
-        return jsonify({"error": "Missing 'recipients' field"}), 400
-    
-    app_config["sms_recipients"] = body["recipients"]
-    save_config()
-    
-    return jsonify({
-        "status": "ok",
-        "recipients": app_config["sms_recipients"]
-    })
-
-
-@app.route("/api/export/csv", methods=["GET"])
-@require_api_key
-def api_export_csv():
-    """Export telemetry data as CSV."""
-    try:
-        history = fetch_history(1000)
-        
-        output = io.StringIO()
-        writer = csv.writer(output)
-        
-        # Header
-        writer.writerow(['timestamp', 'temp', 'bat', 'lat', 'lng', 'hazard', 'status', 'distance', 'accel_x', 'accel_y'])
-        
-        # Data
-        for row in history:
-            writer.writerow([
-                row.get('timestamp', ''),
-                row.get('temp', ''),
-                row.get('bat', ''),
-                row.get('lat', ''),
-                row.get('lng', ''),
-                row.get('hazard', ''),
-                row.get('status', ''),
-                row.get('distance', ''),
-                row.get('accel_x', ''),
-                row.get('accel_y', '')
-            ])
-        
-        output.seek(0)
-        response = make_response(output.getvalue())
-        response.headers['Content-Type'] = 'text/csv'
-        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.csv'
-        return response
-    except Exception as e:
-        logger.error("Failed to export CSV: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/export/json", methods=["GET"])
-@require_api_key
-def api_export_json():
-    """Export telemetry data as JSON."""
-    try:
-        history = fetch_history(1000)
-        response = make_response(json.dumps(history, indent=2))
-        response.headers['Content-Type'] = 'application/json'
-        response.headers['Content-Disposition'] = f'attachment; filename=telemetry_{datetime.date.today()}.json'
-        return response
-    except Exception as e:
-        logger.error("Failed to export JSON: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
-# ===========================================================================
-#  MAIN ENTRY POINT
-# ===========================================================================
-
-def main():
-    """Application entry point."""
-    print()
-    print("=" * 60)
-    print("  AERO SENTINEL - BASE STATION MONITOR")
-    print("  Starting up...")
-    print("=" * 60)
-    print()
-
-    # Load configuration
-    load_config()
-    
-    # Initialize the database
-    initialize_database()
-    ensure_report_directory()
-
-    # Cleanup old data
-    cleanup_old_data()
-
-    # Start serial listener
-    serial_thread = threading.Thread(
-        target=serial_listener_thread,
-        name="SerialListener",
-        daemon=True,
-    )
-    serial_thread.start()
-    logger.info("Serial listener thread started.")
-
-    # Start Flask
-    logger.info("Starting Flask API on %s:%d", FLASK_HOST, FLASK_PORT)
-    logger.info("API Key: %s", API_KEY[:8] + "..." if len(API_KEY) > 8 else API_KEY)
-    
-    app.run(
-        host=FLASK_HOST,
-        port=FLASK_PORT,
-        debug=False,
-        use_reloader=False,
-    )
-
-
-if __name__ == "__main__":
-    main()
-
-
