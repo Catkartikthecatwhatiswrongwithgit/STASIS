@@ -1,23 +1,23 @@
-/* STASIS Sentinel App - Natural Forest Theme */
-/* Clean, professional, no gradients */
+/* STASIS Sentinel App - Dark Blue Theme */
+/* Clean, professional */
 
 :root {
-    /* Earthy Forest Colors */
-    --primary: #8B4513;        /* Saddle Brown */
-    --primary-light: #A0522D;  /* Sienna */
-    --primary-dark: #654321;   /* Dark Brown */
-    --secondary: #556B2F;      /* Dark Olive Green */
-    --dark: #1a1a1a;
-    --darker: #0d0d0d;
-    --success: #228B22;         /* Forest Green */
-    --warning: #DAA520;        /* Goldenrod */
-    --danger: #B22222;         /* Firebrick */
-    --text: #f0f0f0;
-    --text-muted: #a0a0a0;
-    --border: #333333;
-    --accent: #CD853F;         /* Peru */
-    --bg-card: #242424;
-    --bg-sidebar: #1a1a1a;
+    /* Dark Blue Theme */
+    --primary: #0066cc;
+    --primary-light: #0088ff;
+    --primary-dark: #004499;
+    --secondary: #003366;
+    --dark: #0d1117;
+    --darker: #010409;
+    --success: #00cc66;
+    --warning: #ffaa00;
+    --danger: #ff3344;
+    --text: #e6edf3;
+    --text-muted: #7d8590;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --bg-card: #161b22;
+    --bg-sidebar: #0d1117;
 }
 
 * {
