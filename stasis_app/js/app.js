@@ -115,6 +115,49 @@ function initEventListeners() {
         chatSendBtn.addEventListener('click', sendChatMessage);
     }
     
+    // Keyboard shortcuts
+    document.addEventListener('keydown', function(e) {
+        // Don't trigger if typing in input
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        
+        switch(e.key.toLowerCase()) {
+            case ' ':
+                e.preventDefault();
+                sendCommandToRover('STOP');
+                break;
+            case 'p':
+                sendCommandToRover('START_PATROL');
+                break;
+            case 'h':
+                sendCommandToRover('RETURN_BASE');
+                break;
+            case 'f':
+                toggleFencingMode();
+                break;
+            case 'escape':
+                if (state.fencingMode) toggleFencingMode();
+                break;
+            case '1':
+                switchView('dashboard');
+                break;
+            case '2':
+                switchView('map');
+                break;
+            case '3':
+                switchView('stream');
+                break;
+            case '4':
+                switchView('chat');
+                break;
+            case '5':
+                switchView('fencing');
+                break;
+            case '6':
+                switchView('settings');
+                break;
+        }
+    });
+    
     window.addEventListener('resize', function() {
         if (state.miniMap) state.miniMap.invalidateSize();
         if (state.map) state.map.invalidateSize();
@@ -304,44 +347,70 @@ function centerOnBase() {
 // ============================================
 function startFencingMode() {
     state.fencingMode = true;
-    showNotification('Fencing Mode', 'Click and drag to draw patrol area', 'info');
+    state.fenceDrawing = false;
+    showNotification('Fencing Mode', 'Click and drag to draw. Click toggle to exit.', 'info');
     if (state.fencingMap) {
         state.fencingMap.getContainer().style.cursor = 'crosshair';
-        state.fencingMap.dragging.disable();
-        state.fencingMap.touchZoom.disable();
-        state.fencingMap.doubleClickZoom.disable();
-        state.fencingMap.scrollWheelZoom.disable();
     }
 }
 
 function handleFenceMouseDown(e) {
     if (!state.fencingMode) return;
+    
+    // Start drawing
+    state.fenceDrawing = true;
     state.fenceStart = e.latlng;
-    if (state.fenceRect) state.fencingMap.removeLayer(state.fenceRect);
+    
+    if (state.fenceRect) {
+        state.fencingMap.removeLayer(state.fenceRect);
+        state.fenceRect = null;
+    }
+    
+    // Disable dragging while drawing
+    if (state.fencingMap) {
+        state.fencingMap.dragging.disable();
+    }
 }
 
 function handleFenceMouseMove(e) {
-    if (!state.fencingMode || !state.fenceStart) return;
+    if (!state.fencingMode || !state.fenceDrawing || !state.fenceStart) return;
+    
     const bounds = L.latLngBounds(state.fenceStart, e.latlng);
-    if (state.fenceRect) state.fencingMap.removeLayer(state.fenceRect);
+    if (state.fenceRect) {
+        state.fencingMap.removeLayer(state.fenceRect);
+    }
     state.fenceRect = L.rectangle(bounds, { color: '#CD853F', weight: 2, fillOpacity: 0.2 }).addTo(state.fencingMap);
-    updateFencingInfo();
+    updateFencingInfo(e.latlng);
 }
 
 function handleFenceMouseUp(e) {
-    if (!state.fencingMode || !state.fenceStart) return;
-    state.fenceStart = null;
-    updateFencingInfo();
+    if (!state.fencingMode || !state.fenceDrawing) return;
+    
+    state.fenceDrawing = false;
+    
+    // Re-enable dragging after drawing
+    if (state.fencingMap) {
+        state.fencingMap.dragging.enable();
+    }
+    
+    updateFencingInfo(e.latlng);
 }
 
-function updateFencingInfo() {
+function updateFencingInfo(endLatLng) {
     const fencePointsEl = document.getElementById('fencePoints');
     const fenceAreaEl = document.getElementById('fenceArea');
     
     if (state.fenceRect && fencePointsEl && fenceAreaEl) {
         const area = state.fenceRect.getArea();
+        const bounds = state.fenceRect.getBounds();
+        
         fencePointsEl.textContent = 'Rectangle';
-        fenceAreaEl.textContent = (area / 10000).toFixed(2) + ' hectares';
+        fenceAreaEl.textContent = (area / 10000).toFixed(2) + ' ha';
+        
+        // Show coordinates
+        const ne = bounds.getNorthEast();
+        const sw = bounds.getSouthWest();
+        showNotification('Area Drawn', 'NE: ' + ne.lat.toFixed(4) + ',' + ne.lng.toFixed(4), 'info');
     } else if (fencePointsEl && fenceAreaEl) {
         fencePointsEl.textContent = '0';
         fenceAreaEl.textContent = '0';
@@ -354,6 +423,7 @@ function clearFence() {
         state.fenceRect = null;
     }
     state.fenceStart = null;
+    state.fenceDrawing = false;
     updateFencingInfo();
     showNotification('Fence Cleared', 'Patrol area has been cleared', 'success');
 }
@@ -366,17 +436,29 @@ function saveFence() {
     const bounds = state.fenceRect.getBounds();
     const points = [[bounds.getSouthWest().lat, bounds.getSouthWest().lng], [bounds.getNorthEast().lat, bounds.getNorthEast().lng]];
     sendCommand('set_fence', { bounds: points });
+    
+    // Exit fencing mode after saving
+    toggleFencingMode();
     showNotification('Fence Saved', 'Patrol area has been saved', 'success');
 }
 
 function toggleFencingMode() {
     if (state.fencingMode) {
+        // Exiting fencing mode
         state.fencingMode = false;
+        state.fenceDrawing = false;
         if (state.fencingMap) {
             state.fencingMap.getContainer().style.cursor = '';
             state.fencingMap.dragging.enable();
             state.fencingMap.touchZoom.enable();
             state.fencingMap.doubleClickZoom.enable();
+            state.fencingMap.scrollWheelZoom.enable();
+        }
+        showNotification('Fencing Mode', 'Exited fencing mode', 'info');
+    } else {
+        startFencingMode();
+    }
+}
             state.fencingMap.scrollWheelZoom.enable();
         }
     } else {

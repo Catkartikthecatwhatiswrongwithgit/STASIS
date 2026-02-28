@@ -265,25 +265,30 @@
                     <div class="fencing-panel">
                         <h3><i class="fas fa-draw-polygon"></i> Patrol Area</h3>
                         <div class="fencing-info">
-                            <p>Define the area where Stasis will patrol. Click on the map to add points.</p>
+                            <p><strong>Instructions:</strong> Click "Draw" then click and drag on map to draw rectangle.</p>
                             <div class="current-fence">
-                                <h4>Current Fence</h4>
-                                <p><strong>Points:</strong> <span id="fencePoints">0</span></p>
-                                <p><strong>Area:</strong> <span id="fenceArea">0</span> m&sup2;</p>
+                                <h4>Current Area</h4>
+                                <p><strong>Type:</strong> <span id="fencePoints">None</span></p>
+                                <p><strong>Area:</strong> <span id="fenceArea">0</span></p>
                             </div>
                         </div>
                         <div class="fencing-actions">
-                            <button class="btn primary" onclick="startFencingMode()"><i class="fas fa-pencil-alt"></i> Draw New Fence</button>
-                            <button class="btn secondary" onclick="clearFence()"><i class="fas fa-trash"></i> Clear Fence</button>
-                            <button class="btn success" onclick="saveFence()"><i class="fas fa-save"></i> Save Fence</button>
+                            <button class="btn primary" id="fenceToggleBtn" onclick="toggleFencingMode()"><i class="fas fa-pencil-alt"></i> Draw Area</button>
+                            <button class="btn secondary" onclick="clearFence()"><i class="fas fa-trash"></i> Clear</button>
+                            <button class="btn success" onclick="saveFence()"><i class="fas fa-save"></i> Save & Send</button>
                         </div>
                         <div class="patrol-radius">
-                            <h4>Default Patrol Radius</h4>
-                            <p>If no fence is set, Stasis will patrol within this radius from base:</p>
+                            <h4>Default Radius (backup)</h4>
+                            <p>Patrol radius if no fence:</p>
                             <div class="radius-slider">
                                 <input type="range" id="patrolRadius" min="50" max="1000" value="250" oninput="updateRadiusDisplay()">
                                 <span id="radiusValue">250m</span>
                             </div>
+                        </div>
+                        <div class="fencing-help">
+                            <p><strong>Shortcuts:</strong></p>
+                            <p>F = Toggle draw mode</p>
+                            <p>Esc = Exit draw mode</p>
                         </div>
                     </div>
                 </div>
