@@ -220,6 +220,14 @@ The dashboard is a single HTML file with no build step required:
 | `FLASK_HOST` | `0.0.0.0` | API host |
 | `FLASK_PORT` | `5000` | API port |
 | `DATABASE_PATH` | `rover_telemetry.db` | SQLite database file |
+| `API_KEY` | `stasis-2024` | API authentication key |
+
+### API Authentication
+
+Most API endpoints require authentication:
+- Header: `X-API-Key: stasis-2024`
+- Query: `?api_key=stasis-2024`
+- Public (no auth): `/api/health`
 
 ### Dashboard Settings
 
