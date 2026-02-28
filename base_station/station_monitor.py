@@ -563,6 +563,36 @@ def open_serial():
         return None
 
 
+def handle_non_json_message(line):
+    """Handle non-JSON messages from camera/bridge (HAZARD:*, CAM:*, ERROR:*)."""
+    global alert_history
+    
+    if line.startswith("HAZARD:"):
+        hazard_type = line.replace("HAZARD:", "").strip()
+        logger.warning("CAMERA HAZARD DETECTED: %s", hazard_type)
+        
+        # Add to alert history
+        alert_entry = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "status": "HAZARD",
+            "type": hazard_type,
+            "source": "CAMERA",
+            "temp": latest_telemetry.get("temp", 0),
+            "lat": latest_telemetry.get("lat", 0),
+            "lng": latest_telemetry.get("lng", 0),
+        }
+        alert_history.append(alert_entry)
+        
+    elif line.startswith("CAM:READY"):
+        logger.info("Camera ready")
+        
+    elif line.startswith("CAM:ERROR"):
+        logger.error("Camera error: %s", line)
+        
+    elif line.startswith("ERROR:"):
+        logger.error("Device error: %s", line)
+
+
 def send_command_to_bridge(command_string):
     """Sends a command string over UART to the ESP32-C3 bridge."""
     global serial_connection
@@ -609,6 +639,11 @@ def serial_listener_thread():
 
                 logger.debug("RAW: %s", line)
 
+                # Handle non-JSON messages (camera, bridge, etc.)
+                if line.startswith("HAZARD:") or line.startswith("CAM:") or line.startswith("ERROR:"):
+                    handle_non_json_message(line)
+                    continue
+
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError:
@@ -631,6 +666,7 @@ def serial_listener_thread():
                     alert_entry = {
                         "timestamp": datetime.datetime.now().isoformat(),
                         "status":    data.get("status", "UNKNOWN"),
+                        "type":       data.get("hazard_type", "UNKNOWN"),
                         "temp":      data.get("temp", 0),
                         "lat":       data.get("lat", 0),
                         "lng":       data.get("lng", 0),
@@ -853,13 +889,20 @@ def api_download_report(filename):
 @app.route("/api/command", methods=["POST"])
 @require_api_key
 def api_send_command():
-    """Receives a command from the dashboard and forwards it to the rover."""
+    """Receives a command from the dashboard and forwards to the rover."""
     body = request.get_json(silent=True)
     if not body or "cmd" not in body:
         return jsonify({"error": "Missing 'cmd' field"}), 400
 
     command = body["cmd"].strip().upper()
-    valid_commands = {"FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"}
+    valid_commands = {
+        "FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP",
+        "START_PATROL", "PATROL", "STOP_PATROL",
+        "RETURN_BASE", "RETURN_HOME", "HOME",
+        "START_RESEARCH", "RESEARCH",
+        "ENABLE_DOCKING", "DOCKING", "DISABLE_DOCKING",
+        "ALERT", "RESET"
+    }
 
     if command not in valid_commands:
         return jsonify({"error": f"Invalid command. Must be one of: {valid_commands}"}), 400

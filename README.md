@@ -114,6 +114,16 @@ STASIS is an autonomous forest/environmental monitoring rover system designed to
 
 ### 4. Base Station Monitor (`base_station/station_monitor.py`)
 
+**Features:**
+- Receives telemetry from ESP32-C3 bridge via UART
+- Parses both JSON telemetry and non-JSON camera messages (HAZARD:FIRE, HAZARD:HUMAN, etc.)
+- Stores all telemetry in SQLite database
+- Generates PDF/text daily mission reports
+- Sends commands to rover (FORWARD, BACKWARD, LEFT, RIGHT, STOP, PATROL, HOME, DOCKING, etc.)
+- WebSocket support for real-time chat and telemetry
+- Configurable SMS recipients for alerts
+- API key authentication
+
 **API Endpoints:**
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -124,17 +134,21 @@ STASIS is an autonomous forest/environmental monitoring rover system designed to
 | `/api/command` | POST | Send command to rover |
 | `/api/reports` | GET | List generated reports |
 | `/api/health` | GET | System health check |
+| `/api/config` | GET/POST | Configuration |
+| `/ws` | WS | Real-time chat/telemetry |
 
-### 5. Dashboard (`rover_dashboard/index.html`)
+### 5. Web Dashboard (`stasis_app/index.html`)
 
 **Features:**
-- Real-time telemetry display
-- Live map with rover position
-- Manual control (D-pad)
-- Activity log
-- Daily statistics
-- Report downloads
-- Settings panel
+- Dark blue GitHub-style UI
+- Dashboard with rover status, battery, temperature, distance
+- Mini map with rover position
+- Command controls (Stop, Patrol, Home)
+- Full-screen map with Leaflet
+- Chat system with channels (general, alerts, patrol)
+- Geofencing controls for patrol area
+- Login system (optional, saves to localStorage)
+- Real-time simulation mode when Pi not connected
 
 ## Installation
 
@@ -177,30 +191,23 @@ STASIS is an autonomous forest/environmental monitoring rover system designed to
 
 1. Install Python dependencies:
    ```bash
-   pip install flask flask-cors pyserial fpdf2
+   pip install flask flask-cors flask-socketio pyserial fpdf2 eventlet
    ```
 
 2. Run the monitor:
    ```bash
+   cd base_station
    python3 station_monitor.py
    ```
 
-3. Access dashboard at `http://<pi-ip>:5000`
+3. Access dashboard at `http://<pi-ip>:5000/stasis_app/index.html`
 
-### Mobile App Build
+### Web Dashboard
 
-1. Install dependencies:
-   ```bash
-   cd rover_dashboard
-   npm install
-   ```
-
-2. Build for Android:
-   ```bash
-   npx cap sync android
-   cd android
-   ./gradlew assembleDebug
-   ```
+The dashboard is a single HTML file with no build step required:
+- `stasis_app/index.html` - Open directly in browser or serve via Flask
+- No Node.js required - pure HTML/CSS/JavaScript
+- Works offline with simulated data when Pi not connected
 
 ## Configuration
 
@@ -270,4 +277,4 @@ This project is for educational and research purposes.
 
 ---
 
-*Last updated: 2026-02-24*
+*Last updated: 2026-02-28*

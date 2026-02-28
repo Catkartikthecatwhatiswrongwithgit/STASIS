@@ -387,6 +387,16 @@
         </div>
     </div>
     
+    <!-- Login Modal -->
+    <div class="modal-overlay hidden" id="loginModal">
+        <div class="modal-box">
+            <h2><i class="fas fa-leaf"></i> STASIS</h2>
+            <p>Enter your name to continue</p>
+            <input type="text" id="loginName" placeholder="Your name" onkeypress="if(event.key==='Enter')doLogin()">
+            <button class="btn btn-primary" style="width:100%" onclick="doLogin()">Enter</button>
+        </div>
+    </div>
+    
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         // State
@@ -461,11 +471,26 @@
         
         // Rover Commands
         function sendCmd(cmd) {
+            let cmdMap = {'STOP':'STOP','PATROL':'START_PATROL','HOME':'RETURN_HOME'};
+            let apiCmd = cmdMap[cmd] || cmd;
+            
+            // Update local state
             if(cmd==='STOP')rover.status='IDLE';
             else if(cmd==='PATROL')rover.status='PATROL';
             else if(cmd==='HOME')rover.status='RETURNING';
             updateDisplay();
-            alert('Command sent: '+cmd);
+            
+            // Send to backend
+            fetch('/api/command',{
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({cmd:apiCmd})
+            }).then(r=>r.json()).then(d=>{
+                if(d.error)alert('Error: '+d.error);
+                else alert('Command sent: '+cmd);
+            }).catch(e=>{
+                alert('Command (simulated): '+cmd);
+            });
         }
         
         // Chat
