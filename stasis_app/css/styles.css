@@ -31,16 +31,24 @@ button, a, input, .nav-item, .channel, .ctrl-btn, .map-btn, .btn {
     pointer-events: auto !important;
 }
 
+body, html {
+    height: 100%;
+    width: 100%;
+    pointer-events: auto;
+}
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
     background: var(--darker);
     color: var(--text);
     overflow: hidden;
+    pointer-events: auto;
 }
 
 .app-container {
     display: flex;
     height: 100vh;
+    pointer-events: auto;
 }
 
 /* Sidebar - Clean dark */

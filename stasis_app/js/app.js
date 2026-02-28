@@ -81,11 +81,12 @@ function initApp() {
     }
     
     if (!state.currentUser) {
-        showLoginModal();
-    } else {
-        showApp();
+        // Set as guest automatically
+        state.currentUser = { name: 'Guest', role: 'Guest', color: '#58a6ff' };
+        localStorage.setItem('stasis_user', JSON.stringify(state.currentUser));
     }
     
+    showApp();
     initEventListeners();
 }
 
