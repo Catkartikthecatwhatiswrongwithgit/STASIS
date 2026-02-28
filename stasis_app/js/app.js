@@ -175,6 +175,7 @@ function showLoginModal() {
         modal.style.display = 'flex';
         modal.style.visibility = 'visible';
         modal.style.pointerEvents = 'auto';
+        modal.style.opacity = '1';
         modal.style.zIndex = '99999';
     }
 }
@@ -186,6 +187,7 @@ function hideLoginModal() {
         modal.style.display = 'none';
         modal.style.visibility = 'hidden';
         modal.style.pointerEvents = 'none';
+        modal.style.opacity = '0';
     }
 }
 
