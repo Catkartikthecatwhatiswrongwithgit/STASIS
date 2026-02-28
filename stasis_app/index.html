@@ -6,95 +6,283 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial; background: #111; color: #eee; height: 100vh; overflow: hidden; }
         
-        .container { display: flex; height: 100%; }
-        .sidebar { width: 200px; background: #222; padding: 20px; border-right: 1px solid #444; }
-        .sidebar h1 { color: #00aaff; font-size: 24px; margin-bottom: 20px; }
-        .nav-btn { display: block; padding: 12px; color: #aaa; text-decoration: none; margin-bottom: 5px; cursor: pointer; }
-        .nav-btn:hover, .nav-btn.active { background: #333; color: #fff; }
+        :root {
+            --bg-dark: #0a0e14;
+            --bg-card: #161b22;
+            --bg-sidebar: #0d1117;
+            --border: #30363d;
+            --primary: #58a6ff;
+            --success: #3fb950;
+            --danger: #f85149;
+            --warning: #d29922;
+            --text: #c9d1d9;
+            --text-muted: #8b949e;
+        }
         
-        .main { flex: 1; display: flex; flex-direction: column; }
-        .header { background: #222; padding: 15px 20px; border-bottom: 1px solid #444; display: flex; justify-content: space-between; }
-        .status { display: flex; align-items: center; gap: 10px; }
-        .dot { width: 10px; height: 10px; border-radius: 50%; background: #f00; }
-        .dot.on { background: #0f0; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: var(--bg-dark); 
+            color: var(--text); 
+            height: 100vh; 
+            overflow: hidden; 
+        }
+        
+        .app { display: flex; height: 100vh; }
+        
+        /* Sidebar */
+        .sidebar { 
+            width: 220px; 
+            background: var(--bg-sidebar); 
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .logo { 
+            padding: 20px; 
+            font-size: 24px; 
+            font-weight: bold; 
+            color: var(--primary);
+            border-bottom: 1px solid var(--border);
+        }
+        .logo i { margin-right: 10px; }
+        
+        .nav { flex: 1; padding: 10px 0; }
+        .nav-item { 
+            display: flex; 
+            align-items: center; 
+            padding: 12px 20px; 
+            color: var(--text-muted); 
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .nav-item:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+        .nav-item.active { background: rgba(88,166,255,0.1); color: var(--primary); border-left: 3px solid var(--primary); }
+        .nav-item i { width: 25px; margin-right: 10px; }
+        
+        /* Main */
+        .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        
+        .header { 
+            background: var(--bg-sidebar); 
+            padding: 15px 20px; 
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 { font-size: 18px; font-weight: 500; }
+        
+        .status { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+        .dot.on { background: var(--success); }
         
         .content { flex: 1; padding: 20px; overflow: auto; }
+        
+        /* Pages */
         .page { display: none; }
         .page.active { display: block; }
         
-        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
-        .card { background: #222; padding: 20px; border-radius: 8px; }
-        .card h3 { color: #00aaff; margin-bottom: 15px; }
+        /* Dashboard Grid */
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
         
-        .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-        .stat .label { font-size: 12px; color: #888; }
-        .stat .value { font-size: 20px; font-weight: bold; }
+        .card { 
+            background: var(--bg-card); 
+            border-radius: 8px; 
+            padding: 20px; 
+            border: 1px solid var(--border);
+        }
+        
+        .card h3 { 
+            color: var(--text); 
+            font-size: 14px; 
+            margin-bottom: 15px; 
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .card h3 i { color: var(--primary); }
+        
+        .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .stat .label { font-size: 11px; color: var(--text-muted); }
+        .stat .value { font-size: 18px; font-weight: 600; }
         
         .btns { display: flex; gap: 10px; margin-top: 15px; }
-        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
-        .btn-stop { background: #f44; color: #fff; }
-        .btn-play { background: #4f4; color: #000; }
-        .btn-home { background: #44f; color: #fff; }
+        .btn { 
+            padding: 10px 18px; 
+            border: none; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            font-size: 14px;
+            font-weight: 500;
+            transition: 0.2s;
+        }
+        .btn-stop { background: var(--danger); color: #fff; }
+        .btn-stop:hover { background: #d73a3a; }
+        .btn-play { background: var(--success); color: #fff; }
+        .btn-play:hover { background: #2ea043; }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:hover { background: #4090e0; }
         
-        #map, #miniMap { height: 300px; background: #000; border-radius: 8px; }
-        #fencingMap { height: calc(100vh - 150px); background: #000; border-radius: 8px; }
+        /* Maps */
+        #map, #miniMap, #fencingMap { 
+            height: 100%; 
+            background: #000; 
+            border-radius: 8px; 
+            min-height: 300px;
+        }
         
-        .fence-btns { margin-bottom: 15px; }
-        .fence-btns .btn { margin-right: 10px; }
+        .map-container { height: calc(100vh - 120px); }
         
-        .chat { display: flex; height: calc(100vh - 150px); background: #222; border-radius: 8px; }
-        .chat-sidebar { width: 150px; background: #1a1a1a; padding: 10px; }
+        .map-wrap { height: 100%; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
+        
+        /* Fence Controls */
+        .fence-controls { 
+            margin-bottom: 15px; 
+            display: flex;
+            gap: 10px;
+        }
+        
+        /* Chat */
+        .chat-container { 
+            display: flex; 
+            height: calc(100vh - 120px); 
+            background: var(--bg-card); 
+            border-radius: 8px; 
+            overflow: hidden;
+        }
+        
+        .chat-sidebar { 
+            width: 180px; 
+            background: var(--bg-sidebar); 
+            padding: 15px;
+            border-right: 1px solid var(--border);
+        }
+        .chat-sidebar h4 { 
+            color: var(--text-muted); 
+            font-size: 11px; 
+            text-transform: uppercase; 
+            margin-bottom: 10px;
+        }
+        .channel { 
+            padding: 8px 12px; 
+            border-radius: 4px; 
+            color: var(--text-muted); 
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .channel:hover, .channel.active { 
+            background: rgba(88,166,255,0.1); 
+            color: var(--primary); 
+        }
+        
         .chat-main { flex: 1; display: flex; flex-direction: column; }
-        .chat-messages { flex: 1; padding: 10px; overflow: auto; }
-        .chat-input { padding: 10px; display: flex; }
-        .chat-input input { flex: 1; padding: 10px; background: #333; border: none; color: #fff; }
         
-        .stream { background: #000; height: calc(100vh - 150px); display: flex; align-items: center; justify-content: center; border-radius: 8px; color: #666; }
+        .chat-messages { 
+            flex: 1; 
+            padding: 15px; 
+            overflow-y: auto;
+        }
+        .msg { margin-bottom: 12px; }
+        .msg-header { display: flex; gap: 10px; margin-bottom: 4px; }
+        .msg-user { color: var(--primary); font-weight: 500; font-size: 13px; }
+        .msg-time { color: var(--text-muted); font-size: 11px; }
+        .msg-text { color: var(--text-muted); font-size: 14px; }
+        
+        .chat-input { 
+            padding: 15px; 
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 10px;
+        }
+        .chat-input input { 
+            flex: 1; 
+            padding: 10px 15px; 
+            background: var(--bg-dark); 
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 14px;
+        }
+        .chat-input input:focus { outline: none; border-color: var(--primary); }
+        
+        /* Stream */
+        .stream-container { 
+            height: calc(100vh - 120px); 
+            background: #000; 
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+        }
+        .stream-container i { font-size: 64px; margin-bottom: 15px; }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="app">
+        <!-- Sidebar -->
         <div class="sidebar">
-            <h1>STASIS</h1>
-            <a class="nav-btn active" onclick="showPage('dashboard')">Dashboard</a>
-            <a class="nav-btn" onclick="showPage('map')">Map</a>
-            <a class="nav-btn" onclick="showPage('stream')">Stream</a>
-            <a class="nav-btn" onclick="showPage('chat')">Chat</a>
-            <a class="nav-btn" onclick="showPage('fencing')">Fencing</a>
+            <div class="logo"><i class="fas fa-leaf"></i>STASIS</div>
+            <div class="nav">
+                <div class="nav-item active" onclick="showPage('dashboard', this)">
+                    <i class="fas fa-tachometer-alt"></i>Dashboard
+                </div>
+                <div class="nav-item" onclick="showPage('map', this)">
+                    <i class="fas fa-map"></i>Map
+                </div>
+                <div class="nav-item" onclick="showPage('stream', this)">
+                    <i class="fas fa-video"></i>Stream
+                </div>
+                <div class="nav-item" onclick="showPage('chat', this)">
+                    <i class="fas fa-comments"></i>Chat
+                </div>
+                <div class="nav-item" onclick="showPage('fencing', this)">
+                    <i class="fas fa-draw-polygon"></i>Fencing
+                </div>
+            </div>
         </div>
+        
+        <!-- Main -->
         <div class="main">
             <div class="header">
-                <h2 id="pageTitle">Dashboard</h2>
+                <h1 id="pageTitle">Dashboard</h1>
                 <div class="status">
                     <div class="dot" id="statusDot"></div>
                     <span id="statusText">Offline</span>
                 </div>
             </div>
+            
             <div class="content">
                 <!-- Dashboard -->
                 <div class="page active" id="page-dashboard">
                     <div class="grid">
                         <div class="card">
-                            <h3>Rover Status</h3>
+                            <h3><i class="fas fa-robot"></i>Rover Status</h3>
                             <div class="stats">
                                 <div class="stat"><div class="label">State</div><div class="value" id="roverState">IDLE</div></div>
-                                <div class="stat"><div class="label">Battery</div><div class="value" id="roverBattery">0%</div></div>
-                                <div class="stat"><div class="label">Temp</div><div class="value" id="roverTemp">0°C</div></div>
-                                <div class="stat"><div class="label">Distance</div><div class="value" id="roverDistance">0cm</div></div>
+                                <div class="stat"><div class="label">Battery</div><div class="value" id="roverBattery">75%</div></div>
+                                <div class="stat"><div class="label">Temp</div><div class="value" id="roverTemp">25°C</div></div>
+                                <div class="stat"><div class="label">Distance</div><div class="value" id="roverDistance">100cm</div></div>
                             </div>
                         </div>
                         <div class="card">
-                            <h3>Location</h3>
+                            <h3><i class="fas fa-map-marker-alt"></i>Location</h3>
                             <div id="miniMap"></div>
                         </div>
                         <div class="card">
-                            <h3>Controls</h3>
+                            <h3><i class="fas fa-gamepad"></i>Controls</h3>
                             <div class="btns">
                                 <button class="btn btn-stop" onclick="sendCmd('STOP')">Stop</button>
                                 <button class="btn btn-play" onclick="sendCmd('PATROL')">Patrol</button>
-                                <button class="btn btn-home" onclick="sendCmd('HOME')">Home</button>
+                                <button class="btn btn-primary" onclick="sendCmd('HOME')">Home</button>
                             </div>
                         </div>
                     </div>
@@ -102,31 +290,45 @@
                 
                 <!-- Map -->
                 <div class="page" id="page-map">
-                    <div id="map"></div>
+                    <div class="map-container">
+                        <div class="map-wrap">
+                            <div id="map"></div>
+                        </div>
+                    </div>
                 </div>
                 
                 <!-- Stream -->
                 <div class="page" id="page-stream">
-                    <div class="stream">
-                        <div><i class="fas fa-video fa-3x"></i><p>Stream unavailable</p></div>
+                    <div class="stream-container">
+                        <div style="text-align:center;">
+                            <i class="fas fa-video-slash"></i>
+                            <p>Camera stream unavailable</p>
+                        </div>
                     </div>
                 </div>
                 
                 <!-- Chat -->
                 <div class="page" id="page-chat">
-                    <div class="chat">
+                    <div class="chat-container">
                         <div class="chat-sidebar">
-                            <div style="color:#888;padding:10px;">Channels</div>
-                            <div class="nav-btn active">#general</div>
-                            <div class="nav-btn">#alerts</div>
+                            <h4>Channels</h4>
+                            <div class="channel active">#general</div>
+                            <div class="channel">#alerts</div>
+                            <div class="channel">#patrol</div>
                         </div>
                         <div class="chat-main">
                             <div class="chat-messages" id="chatMessages">
-                                <div style="color:#666;padding:10px;">Welcome to STASIS Chat</div>
+                                <div class="msg">
+                                    <div class="msg-header">
+                                        <span class="msg-user">System</span>
+                                        <span class="msg-time">Now</span>
+                                    </div>
+                                    <div class="msg-text">Welcome to STASIS Chat!</div>
+                                </div>
                             </div>
                             <div class="chat-input">
-                                <input type="text" id="chatInput" placeholder="Type message..." onkeypress="if(event.key==='Enter')sendChat()">
-                                <button class="btn" style="background:#00aaff;color:#fff;margin-left:5px;" onclick="sendChat()">Send</button>
+                                <input type="text" id="chatInput" placeholder="Type a message..." onkeypress="if(event.key==='Enter')sendChat()">
+                                <button class="btn btn-primary" onclick="sendChat()">Send</button>
                             </div>
                         </div>
                     </div>
@@ -134,12 +336,16 @@
                 
                 <!-- Fencing -->
                 <div class="page" id="page-fencing">
-                    <div class="fence-btns">
-                        <button class="btn btn-play" onclick="toggleFence()">Draw Area</button>
+                    <div class="fence-controls">
+                        <button class="btn btn-primary" onclick="toggleFence()">Draw Area</button>
                         <button class="btn btn-stop" onclick="clearFence()">Clear</button>
-                        <button class="btn btn-home" onclick="saveFence()">Save</button>
+                        <button class="btn btn-play" onclick="saveFence()">Save</button>
                     </div>
-                    <div id="fencingMap"></div>
+                    <div class="map-container">
+                        <div class="map-wrap">
+                            <div id="fencingMap"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -147,101 +353,130 @@
     
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        let map, miniMap, fenceMap, fenceRect, fenceMode = false;
+        // State
+        let map, miniMap, fenceMap, fenceRect, fenceMode = false, fenceStart = null;
         let rover = { lat: 11.0168, lng: 76.9558, battery: 75, temp: 25, status: 'IDLE', distance: 100 };
         
-        function showPage(name) {
+        // Page Navigation
+        function showPage(name, el) {
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
             document.getElementById('page-' + name).classList.add('active');
-            event.target.classList.add('active');
+            if(el) el.classList.add('active');
             document.getElementById('pageTitle').textContent = name.charAt(0).toUpperCase() + name.slice(1);
             
             setTimeout(() => {
-                if (name === 'map' && map) map.invalidateSize();
-                if (name === 'fencing' && fenceMap) fenceMap.invalidateSize();
+                if(name === 'map' && map) map.invalidateSize();
+                if(name === 'fencing' && fenceMap) fenceMap.invalidateSize();
             }, 100);
         }
         
+        // Maps
         function initMaps() {
             const center = [rover.lat, rover.lng];
+            const roverIcon = L.divIcon({className:'',html:'<div style="background:#58a6ff;width:24px;height:24px;border-radius:50%;border:3px solid #fff;display:flex;align-items:center;justify-content:center;"><i class="fas fa-robot" style="color:#fff;font-size:10px;"></i></div>',iconSize:[24,24],iconAnchor:[12,12]});
+            const homeIcon = L.divIcon({className:'',html:'<div style="background:#3fb950;width:20px;height:20px;border-radius:4px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;"><i class="fas fa-home" style="color:#fff;font-size:10px;"></i></div>',iconSize:[20,20],iconAnchor:[10,10]});
             
-            miniMap = L.map('miniMap', {zoomControl:false}).setView(center, 15);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(miniMap);
-            L.marker(center, {icon:L.divIcon({html:'<div style="background:#0ff;width:20px;height:20px;border-radius:50%;border:2px solid #fff;"></div>',iconSize:[20,20]})}).addTo(miniMap);
+            miniMap = L.map('miniMap',{zoomControl:false,dragging:false}).setView(center,15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:''}).addTo(miniMap);
+            L.marker(center,{icon:homeIcon}).addTo(miniMap);
+            miniMap.markers = [L.marker(center,{icon:roverIcon}).addTo(miniMap)];
             
-            map = L.map('map').setView(center, 15);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-            L.marker(center, {icon:L.divIcon({html:'<div style="background:#0f0;width:20px;height:20px;border-radius:50%;border:2px solid #fff;"></div>',iconSize:[20,20]})}).addTo(map);
+            map = L.map('map').setView(center,15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:''}).addTo(map);
+            map.markers = [L.marker(center,{icon:homeIcon,title:'Base'}).addTo(map),L.marker(center,{icon:roverIcon,title:'Rover'}).addTo(map)];
             
-            fenceMap = L.map('fencingMap').setView(center, 15);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(fenceMap);
-            L.marker(center, {icon:L.divIcon({html:'<div style="background:#0f0;width:20px;height:20px;border-radius:4px;border:2px solid #fff;"></div>',iconSize:[20,20]})}).addTo(fenceMap);
+            fenceMap = L.map('fencingMap').setView(center,15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:''}).addTo(fenceMap);
+            L.marker(center,{icon:homeIcon,title:'Base'}).addTo(fenceMap);
             
-            fenceMap.on('mousedown', function(e) {
-                if (!fenceMode) return;
-                if (fenceRect) fenceMap.removeLayer(fenceRect);
-                fenceRect = L.rectangle(L.latLngBounds(e.latlng, e.latlng), {color:'#0ff',fillOpacity:0.2}).addTo(fenceMap);
+            fenceMap.on('mousedown',function(e){
+                if(!fenceMode) return;
+                if(fenceRect)fenceMap.removeLayer(fenceRect);
+                fenceStart=e.latlng;
+                fenceRect=L.rectangle(L.latLngBounds(e.latlng,e.latlng),{color:'#58a6ff',fillOpacity:0.2}).addTo(fenceMap);
             });
-            fenceMap.on('mousemove', function(e) {
-                if (!fenceMode || !fenceRect) return;
-                fenceRect.setBounds(L.latLngBounds(fenceRect.getBounds().getSouthWest(), e.latlng));
+            fenceMap.on('mousemove',function(e){
+                if(!fenceMode||!fenceStart||!fenceRect)return;
+                fenceRect.setBounds(L.latLngBounds(fenceStart,e.latlng));
+            });
+            fenceMap.on('mouseup',function(e){
+                if(!fenceMode||!fenceStart)return;
+                fenceStart=null;
             });
         }
         
+        // Fence Controls
         function toggleFence() {
-            fenceMode = !fenceMode;
-            fenceMap.getContainer().style.cursor = fenceMode ? 'crosshair' : '';
-            alert(fenceMode ? 'Draw mode: Click and drag on map' : 'Draw mode off');
+            fenceMode=!fenceMode;
+            fenceMap.getContainer().style.cursor=fenceMode?'crosshair':'';
+            alert(fenceMode?'Draw mode: Click and drag on map':'Draw mode off');
         }
-        
         function clearFence() {
-            if (fenceRect) { fenceMap.removeLayer(fenceRect); fenceRect = null; }
+            if(fenceRect){fenceMap.removeLayer(fenceRect);fenceRect=null;}
         }
-        
         function saveFence() {
-            if (!fenceRect) { alert('Draw an area first!'); return; }
+            if(!fenceRect){alert('Draw an area first!');return;}
             alert('Fence saved!');
+            fenceMode=false;
+            fenceMap.getContainer().style.cursor='';
         }
         
+        // Rover Commands
         function sendCmd(cmd) {
-            rover.status = cmd === 'PATROL' ? 'PATROL' : cmd === 'HOME' ? 'RETURNING' : 'IDLE';
+            if(cmd==='STOP')rover.status='IDLE';
+            else if(cmd==='PATROL')rover.status='PATROL';
+            else if(cmd==='HOME')rover.status='RETURNING';
             updateDisplay();
-            alert('Command: ' + cmd);
+            alert('Command sent: '+cmd);
         }
         
+        // Chat
         function sendChat() {
-            const input = document.getElementById('chatInput');
-            const msg = input.value.trim();
-            if (!msg) return;
-            const div = document.createElement('div');
-            div.style.padding = '5px 10px';
-            div.innerHTML = '<strong>Guest:</strong> ' + msg;
-            document.getElementById('chatMessages').appendChild(div);
-            input.value = '';
+            const input=document.getElementById('chatInput');
+            const text=input.value.trim();
+            if(!text)return;
+            const msgs=document.getElementById('chatMessages');
+            const div=document.createElement('div');
+            div.className='msg';
+            div.innerHTML='<div class="msg-header"><span class="msg-user">Guest</span><span class="msg-time">'+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+'</span></div><div class="msg-text">'+text+'</div>';
+            msgs.appendChild(div);
+            msgs.scrollTop=msgs.scrollHeight;
+            input.value='';
         }
         
+        // Update Display
         function updateDisplay() {
-            document.getElementById('roverState').textContent = rover.status;
-            document.getElementById('roverBattery').textContent = rover.battery + '%';
-            document.getElementById('roverTemp').textContent = rover.temp.toFixed(1) + '°C';
-            document.getElementById('roverDistance').textContent = rover.distance.toFixed(0) + 'cm';
+            document.getElementById('roverState').textContent=rover.status;
+            document.getElementById('roverBattery').textContent=rover.battery.toFixed(0)+'%';
+            document.getElementById('roverTemp').textContent=rover.temp.toFixed(1)+'°C';
+            document.getElementById('roverDistance').textContent=rover.distance.toFixed(0)+'cm';
+            
+            if(miniMap&&miniMap.markers){
+                miniMap.markers[0].setLatLng([rover.lat,rover.lng]);
+            }
+            if(map&&map.markers){
+                map.markers[1].setLatLng([rover.lat,rover.lng]);
+            }
         }
         
+        // Simulation
         function simulate() {
-            setInterval(() => {
-                rover.temp = 22 + Math.random() * 10;
-                rover.battery = Math.max(0, rover.battery - 0.01);
-                if (rover.status === 'PATROL') {
-                    rover.lat += (Math.random() - 0.5) * 0.001;
-                    rover.lng += (Math.random() - 0.5) * 0.001;
+            setInterval(()=>{
+                rover.temp=22+Math.random()*10;
+                rover.battery=Math.max(0,rover.battery-0.005);
+                if(rover.status==='PATROL'){
+                    rover.lat+=(Math.random()-0.5)*0.0008;
+                    rover.lng+=(Math.random()-0.5)*0.0008;
                 }
+                rover.distance=30+Math.random()*150;
                 updateDisplay();
                 document.getElementById('statusDot').classList.add('on');
-                document.getElementById('statusText').textContent = 'Simulated';
-            }, 2000);
+                document.getElementById('statusText').textContent='Simulated';
+            },2000);
         }
         
+        // Init
         initMaps();
         simulate();
     </script>
