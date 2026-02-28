@@ -1,358 +1,249 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stasis Sentinel - Forest Monitoring System</title>
-    <link rel="stylesheet" href="css/styles.css">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <title>STASIS - Forest Monitor</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial; background: #111; color: #eee; height: 100vh; overflow: hidden; }
+        
+        .container { display: flex; height: 100%; }
+        .sidebar { width: 200px; background: #222; padding: 20px; border-right: 1px solid #444; }
+        .sidebar h1 { color: #00aaff; font-size: 24px; margin-bottom: 20px; }
+        .nav-btn { display: block; padding: 12px; color: #aaa; text-decoration: none; margin-bottom: 5px; cursor: pointer; }
+        .nav-btn:hover, .nav-btn.active { background: #333; color: #fff; }
+        
+        .main { flex: 1; display: flex; flex-direction: column; }
+        .header { background: #222; padding: 15px 20px; border-bottom: 1px solid #444; display: flex; justify-content: space-between; }
+        .status { display: flex; align-items: center; gap: 10px; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; background: #f00; }
+        .dot.on { background: #0f0; }
+        
+        .content { flex: 1; padding: 20px; overflow: auto; }
+        .page { display: none; }
+        .page.active { display: block; }
+        
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+        .card { background: #222; padding: 20px; border-radius: 8px; }
+        .card h3 { color: #00aaff; margin-bottom: 15px; }
+        
+        .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+        .stat .label { font-size: 12px; color: #888; }
+        .stat .value { font-size: 20px; font-weight: bold; }
+        
+        .btns { display: flex; gap: 10px; margin-top: 15px; }
+        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
+        .btn-stop { background: #f44; color: #fff; }
+        .btn-play { background: #4f4; color: #000; }
+        .btn-home { background: #44f; color: #fff; }
+        
+        #map, #miniMap { height: 300px; background: #000; border-radius: 8px; }
+        #fencingMap { height: calc(100vh - 150px); background: #000; border-radius: 8px; }
+        
+        .fence-btns { margin-bottom: 15px; }
+        .fence-btns .btn { margin-right: 10px; }
+        
+        .chat { display: flex; height: calc(100vh - 150px); background: #222; border-radius: 8px; }
+        .chat-sidebar { width: 150px; background: #1a1a1a; padding: 10px; }
+        .chat-main { flex: 1; display: flex; flex-direction: column; }
+        .chat-messages { flex: 1; padding: 10px; overflow: auto; }
+        .chat-input { padding: 10px; display: flex; }
+        .chat-input input { flex: 1; padding: 10px; background: #333; border: none; color: #fff; }
+        
+        .stream { background: #000; height: calc(100vh - 150px); display: flex; align-items: center; justify-content: center; border-radius: 8px; color: #666; }
+    </style>
 </head>
 <body>
-    <div class="app-container">
-        <!-- Sidebar -->
-        <aside class="sidebar">
-            <div class="logo">
-                <i class="fas fa-leaf"></i>
-                <span>STASIS</span>
-            </div>
-            <div class="competition-badge">Technoxian 10.0 - Zonals</div>
-            
-            <nav class="nav-menu">
-                <a href="#" class="nav-item active" data-view="dashboard">
-                    <i class="fas fa-tachometer-alt"></i>
-                    <span>Dashboard</span>
-                </a>
-                <a href="#" class="nav-item" data-view="map">
-                    <i class="fas fa-map-marked-alt"></i>
-                    <span>Map View</span>
-                </a>
-                <a href="#" class="nav-item" data-view="stream">
-                    <i class="fas fa-video"></i>
-                    <span>Live Stream</span>
-                </a>
-                <a href="#" class="nav-item" data-view="chat">
-                    <i class="fas fa-comments"></i>
-                    <span>Chat</span>
-                </a>
-                <a href="#" class="nav-item" data-view="fencing">
-                    <i class="fas fa-draw-polygon"></i>
-                    <span>Area Fencing</span>
-                </a>
-                <a href="#" class="nav-item" data-view="settings">
-                    <i class="fas fa-cog"></i>
-                    <span>Settings</span>
-                </a>
-            </nav>
-            
-            <div class="user-panel">
-                <div class="user-info">
-                    <div class="user-avatar" id="userAvatar">
-                        <i class="fas fa-user"></i>
-                    </div>
-                    <div class="user-details">
-                        <span class="user-name" id="userName">Guest</span>
-                        <span class="user-role" id="userRole">Guest</span>
-                    </div>
-                </div>
-                <button class="logout-btn" onclick="handleLogout()" title="Logout">
-                    <i class="fas fa-sign-out-alt"></i>
-                </button>
-            </div>
-        </aside>
-
-        <!-- Main Content -->
-        <main class="main-content">
-            <!-- Header -->
-            <header class="header">
-                <div class="header-left">
-                    <button class="menu-toggle" onclick="toggleSidebar()">
-                        <i class="fas fa-bars"></i>
-                    </button>
-                    <h1 id="pageTitle">Dashboard</h1>
-                </div>
-                <div class="header-right">
-                    <div class="connection-status" id="connectionStatus">
-                        <span class="status-dot"></span>
-                        <span>Connected</span>
-                    </div>
-                    <div class="notifications">
-                        <button class="notif-btn" onclick="toggleNotifications()">
-                            <i class="fas fa-bell"></i>
-                            <span class="notif-badge" id="notifBadge" style="display:none;">0</span>
-                        </button>
-                    </div>
-                </div>
-            </header>
-
-            <!-- Dashboard View -->
-            <section class="view active" id="dashboardView">
-                <div class="dashboard-grid">
-                    <div class="card rover-status-card">
-                        <h3><i class="fas fa-robot"></i> Rover Status</h3>
-                        <div class="status-grid">
-                            <div class="status-item">
-                                <span class="label">State</span>
-                                <span class="value" id="roverState">IDLE</span>
-                            </div>
-                            <div class="status-item">
-                                <span class="label">Battery</span>
-                                <span class="value" id="roverBattery">--%</span>
-                            </div>
-                            <div class="status-item">
-                                <span class="label">Temperature</span>
-                                <span class="value" id="roverTemp">--°C</span>
-                            </div>
-                            <div class="status-item">
-                                <span class="label">Distance</span>
-                                <span class="value" id="roverDistance">-- cm</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="card mini-map-card">
-                        <h3><i class="fas fa-map"></i> Location</h3>
-                        <div id="miniMap"></div>
-                    </div>
-
-                    <div class="card stream-preview-card">
-                        <h3><i class="fas fa-video"></i> Live Feed</h3>
-                        <div class="stream-container">
-                            <div class="stream-placeholder">
-                                <i class="fas fa-video-slash"></i>
-                                <span>Stream unavailable</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="card alerts-card">
-                        <h3><i class="fas fa-exclamation-triangle"></i> Recent Alerts</h3>
-                        <div class="alerts-list" id="alertsList">
-                            <div class="no-data">No alerts</div>
-                        </div>
-                    </div>
-
-                    <div class="card stats-card">
-                        <h3><i class="fas fa-chart-bar"></i> Today's Stats</h3>
-                        <div class="stats-grid">
-                            <div class="stat-item">
-                                <span class="stat-value" id="packetsToday">0</span>
-                                <span class="stat-label">Packets</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-value" id="distanceCovered">0</span>
-                                <span class="stat-label">Meters</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-value" id="hazardsDetected">0</span>
-                                <span class="stat-label">Hazards</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="card controls-card">
-                        <h3><i class="fas fa-gamepad"></i> Quick Controls</h3>
-                        <div class="control-buttons">
-                            <button class="ctrl-btn" onclick="sendCommandToRover('STOP')" title="Stop">
-                                <i class="fas fa-stop"></i>
-                            </button>
-                            <button class="ctrl-btn" onclick="sendCommandToRover('START_PATROL')" title="Start Patrol">
-                                <i class="fas fa-play"></i>
-                            </button>
-                            <button class="ctrl-btn" onclick="sendCommandToRover('RETURN_BASE')" title="Return to Base">
-                                <i class="fas fa-home"></i>
-                            </button>
-                        </div>
-                        <p class="control-note"><i class="fas fa-wifi"></i> Click buttons to control the rover</p>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Map View -->
-            <section class="view" id="mapView">
-                <div class="map-container">
-                    <div id="mainMap"></div>
-                    <div class="map-controls">
-                        <button class="map-btn" onclick="centerOnRover()" title="Center on Rover">
-                            <i class="fas fa-crosshairs"></i>
-                        </button>
-                        <button class="map-btn" onclick="centerOnBase()" title="Center on Base">
-                            <i class="fas fa-home"></i>
-                        </button>
-                        <button class="map-btn" onclick="toggleFencingMode()" title="Draw Fence">
-                            <i class="fas fa-draw-polygon"></i>
-                        </button>
-                    </div>
-                    <div class="rover-info-panel">
-                        <h4>Rover Position</h4>
-                        <p><strong>Lat:</strong> <span id="roverLat">--</span></p>
-                        <p><strong>Lng:</strong> <span id="roverLng">--</span></p>
-                        <p><strong>Heading:</strong> <span id="roverHeading">--</span>&deg;</p>
-                        <p><strong>Speed:</strong> <span id="roverSpeed">--</span></p>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Live Stream View -->
-            <section class="view" id="streamView">
-                <div class="stream-view-container">
-                    <div class="main-stream">
-                        <div class="stream-placeholder large">
-                            <i class="fas fa-video-slash"></i>
-                            <span>Camera stream will appear here when connected</span>
-                        </div>
-                    </div>
-                    <div class="stream-info">
-                        <h3>Stream Information</h3>
-                        <div class="info-grid">
-                            <div class="info-item">
-                                <span class="label">Status</span>
-                                <span class="value">Offline</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="label">Resolution</span>
-                                <span class="value">320x240</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="label">FPS</span>
-                                <span class="value" id="streamFps">--</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Chat View -->
-            <section class="view" id="chatView">
-                <div class="chat-container">
-                    <div class="chat-sidebar">
-                        <h3>Channels</h3>
-                        <div class="channel-list">
-                            <div class="channel active" data-channel="general">
-                                <i class="fas fa-hashtag"></i>
-                                <span>general</span>
-                            </div>
-                            <div class="channel" data-channel="alerts">
-                                <i class="fas fa-exclamation-circle"></i>
-                                <span>alerts</span>
-                            </div>
-                            <div class="channel" data-channel="patrol">
-                                <i class="fas fa-route"></i>
-                                <span>patrol</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="chat-main">
-                        <div class="chat-header">
-                            <span class="channel-name"># general</span>
-                            <span class="channel-desc">General discussion</span>
-                        </div>
-                        <div class="messages-container" id="messagesContainer">
-                            <div class="no-messages">No messages yet</div>
-                        </div>
-                        <div class="chat-input-container">
-                            <input type="text" id="chatInput" placeholder="Type a message..." onkeypress="handleChatKeypress(event)">
-                            <button onclick="sendChatMessage()"><i class="fas fa-paper-plane"></i></button>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Fencing View -->
-            <section class="view" id="fencingView">
-                <div class="fencing-container">
-                    <div class="fencing-map"><div id="fencingMap"></div></div>
-                    <div class="fencing-panel">
-                        <h3><i class="fas fa-draw-polygon"></i> Patrol Area</h3>
-                        <div class="fencing-info">
-                            <p><strong>Instructions:</strong> Click "Draw" then click and drag on map to draw rectangle.</p>
-                            <div class="current-fence">
-                                <h4>Current Area</h4>
-                                <p><strong>Type:</strong> <span id="fencePoints">None</span></p>
-                                <p><strong>Area:</strong> <span id="fenceArea">0</span></p>
-                            </div>
-                        </div>
-                        <div class="fencing-actions">
-                            <button class="btn primary" id="fenceToggleBtn" onclick="toggleFencingMode()"><i class="fas fa-pencil-alt"></i> Draw Area</button>
-                            <button class="btn secondary" onclick="clearFence()"><i class="fas fa-trash"></i> Clear</button>
-                            <button class="btn success" onclick="saveFence()"><i class="fas fa-save"></i> Save & Send</button>
-                        </div>
-                        <div class="patrol-radius">
-                            <h4>Default Radius (backup)</h4>
-                            <p>Patrol radius if no fence:</p>
-                            <div class="radius-slider">
-                                <input type="range" id="patrolRadius" min="50" max="1000" value="250" oninput="updateRadiusDisplay()">
-                                <span id="radiusValue">250m</span>
-                            </div>
-                        </div>
-                        <div class="fencing-help">
-                            <p><strong>Shortcuts:</strong></p>
-                            <p>F = Toggle draw mode</p>
-                            <p>Esc = Exit draw mode</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Settings View -->
-            <section class="view" id="settingsView">
-                <div class="settings-container">
-                    <div class="settings-section">
-                        <h3><i class="fas fa-server"></i> Connection Settings</h3>
-                        <div class="settings-form">
-                            <div class="form-group">
-                                <label>Base Station IP</label>
-                                <input type="text" id="baseStationIP" value="192.168.4.1">
-                            </div>
-                            <div class="form-group">
-                                <label>API Port</label>
-                                <input type="number" id="apiPort" value="5000">
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-section">
-                        <h3><i class="fas fa-bell"></i> Notification Settings</h3>
-                        <div class="settings-form">
-                            <div class="form-group checkbox">
-                                <input type="checkbox" id="enableAlerts" checked>
-                                <label for="enableAlerts">Enable Alert Notifications</label>
-                            </div>
-                            <div class="form-group checkbox">
-                                <input type="checkbox" id="enableSound" checked>
-                                <label for="enableSound">Sound Notifications</label>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-section">
-                        <h3><i class="fas fa-map-marker-alt"></i> Patrol Settings</h3>
-                        <div class="settings-form">
-                            <div class="form-group">
-                                <label>Return Battery Threshold (%)</label>
-                                <input type="number" id="returnBattery" value="30" min="10" max="50">
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-actions">
-                        <button class="btn primary" onclick="saveSettings()"><i class="fas fa-save"></i> Save Settings</button>
-                        <button class="btn secondary" onclick="resetSettings()"><i class="fas fa-undo"></i> Reset to Defaults</button>
-                    </div>
-                </div>
-            </section>
-        </main>
-    </div>
-
-    <!-- Notification Panel -->
-    <div class="notification-panel" id="notificationPanel">
-        <div class="notif-header">
-            <h4>Notifications</h4>
-            <button onclick="clearNotifications()">Clear All</button>
+    <div class="container">
+        <div class="sidebar">
+            <h1>STASIS</h1>
+            <a class="nav-btn active" onclick="showPage('dashboard')">Dashboard</a>
+            <a class="nav-btn" onclick="showPage('map')">Map</a>
+            <a class="nav-btn" onclick="showPage('stream')">Stream</a>
+            <a class="nav-btn" onclick="showPage('chat')">Chat</a>
+            <a class="nav-btn" onclick="showPage('fencing')">Fencing</a>
         </div>
-        <div class="notif-list" id="notifList">
-            <div class="no-notifications">No notifications</div>
+        <div class="main">
+            <div class="header">
+                <h2 id="pageTitle">Dashboard</h2>
+                <div class="status">
+                    <div class="dot" id="statusDot"></div>
+                    <span id="statusText">Offline</span>
+                </div>
+            </div>
+            <div class="content">
+                <!-- Dashboard -->
+                <div class="page active" id="page-dashboard">
+                    <div class="grid">
+                        <div class="card">
+                            <h3>Rover Status</h3>
+                            <div class="stats">
+                                <div class="stat"><div class="label">State</div><div class="value" id="roverState">IDLE</div></div>
+                                <div class="stat"><div class="label">Battery</div><div class="value" id="roverBattery">0%</div></div>
+                                <div class="stat"><div class="label">Temp</div><div class="value" id="roverTemp">0°C</div></div>
+                                <div class="stat"><div class="label">Distance</div><div class="value" id="roverDistance">0cm</div></div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <h3>Location</h3>
+                            <div id="miniMap"></div>
+                        </div>
+                        <div class="card">
+                            <h3>Controls</h3>
+                            <div class="btns">
+                                <button class="btn btn-stop" onclick="sendCmd('STOP')">Stop</button>
+                                <button class="btn btn-play" onclick="sendCmd('PATROL')">Patrol</button>
+                                <button class="btn btn-home" onclick="sendCmd('HOME')">Home</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Map -->
+                <div class="page" id="page-map">
+                    <div id="map"></div>
+                </div>
+                
+                <!-- Stream -->
+                <div class="page" id="page-stream">
+                    <div class="stream">
+                        <div><i class="fas fa-video fa-3x"></i><p>Stream unavailable</p></div>
+                    </div>
+                </div>
+                
+                <!-- Chat -->
+                <div class="page" id="page-chat">
+                    <div class="chat">
+                        <div class="chat-sidebar">
+                            <div style="color:#888;padding:10px;">Channels</div>
+                            <div class="nav-btn active">#general</div>
+                            <div class="nav-btn">#alerts</div>
+                        </div>
+                        <div class="chat-main">
+                            <div class="chat-messages" id="chatMessages">
+                                <div style="color:#666;padding:10px;">Welcome to STASIS Chat</div>
+                            </div>
+                            <div class="chat-input">
+                                <input type="text" id="chatInput" placeholder="Type message..." onkeypress="if(event.key==='Enter')sendChat()">
+                                <button class="btn" style="background:#00aaff;color:#fff;margin-left:5px;" onclick="sendChat()">Send</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Fencing -->
+                <div class="page" id="page-fencing">
+                    <div class="fence-btns">
+                        <button class="btn btn-play" onclick="toggleFence()">Draw Area</button>
+                        <button class="btn btn-stop" onclick="clearFence()">Clear</button>
+                        <button class="btn btn-home" onclick="saveFence()">Save</button>
+                    </div>
+                    <div id="fencingMap"></div>
+                </div>
+            </div>
         </div>
     </div>
-
+    
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="js/app.js"></script>
+    <script>
+        let map, miniMap, fenceMap, fenceRect, fenceMode = false;
+        let rover = { lat: 11.0168, lng: 76.9558, battery: 75, temp: 25, status: 'IDLE', distance: 100 };
+        
+        function showPage(name) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById('page-' + name).classList.add('active');
+            event.target.classList.add('active');
+            document.getElementById('pageTitle').textContent = name.charAt(0).toUpperCase() + name.slice(1);
+            
+            setTimeout(() => {
+                if (name === 'map' && map) map.invalidateSize();
+                if (name === 'fencing' && fenceMap) fenceMap.invalidateSize();
+            }, 100);
+        }
+        
+        function initMaps() {
+            const center = [rover.lat, rover.lng];
+            
+            miniMap = L.map('miniMap', {zoomControl:false}).setView(center, 15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(miniMap);
+            L.marker(center, {icon:L.divIcon({html:'<div style="background:#0ff;width:20px;height:20px;border-radius:50%;border:2px solid #fff;"></div>',iconSize:[20,20]})}).addTo(miniMap);
+            
+            map = L.map('map').setView(center, 15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+            L.marker(center, {icon:L.divIcon({html:'<div style="background:#0f0;width:20px;height:20px;border-radius:50%;border:2px solid #fff;"></div>',iconSize:[20,20]})}).addTo(map);
+            
+            fenceMap = L.map('fencingMap').setView(center, 15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(fenceMap);
+            L.marker(center, {icon:L.divIcon({html:'<div style="background:#0f0;width:20px;height:20px;border-radius:4px;border:2px solid #fff;"></div>',iconSize:[20,20]})}).addTo(fenceMap);
+            
+            fenceMap.on('mousedown', function(e) {
+                if (!fenceMode) return;
+                if (fenceRect) fenceMap.removeLayer(fenceRect);
+                fenceRect = L.rectangle(L.latLngBounds(e.latlng, e.latlng), {color:'#0ff',fillOpacity:0.2}).addTo(fenceMap);
+            });
+            fenceMap.on('mousemove', function(e) {
+                if (!fenceMode || !fenceRect) return;
+                fenceRect.setBounds(L.latLngBounds(fenceRect.getBounds().getSouthWest(), e.latlng));
+            });
+        }
+        
+        function toggleFence() {
+            fenceMode = !fenceMode;
+            fenceMap.getContainer().style.cursor = fenceMode ? 'crosshair' : '';
+            alert(fenceMode ? 'Draw mode: Click and drag on map' : 'Draw mode off');
+        }
+        
+        function clearFence() {
+            if (fenceRect) { fenceMap.removeLayer(fenceRect); fenceRect = null; }
+        }
+        
+        function saveFence() {
+            if (!fenceRect) { alert('Draw an area first!'); return; }
+            alert('Fence saved!');
+        }
+        
+        function sendCmd(cmd) {
+            rover.status = cmd === 'PATROL' ? 'PATROL' : cmd === 'HOME' ? 'RETURNING' : 'IDLE';
+            updateDisplay();
+            alert('Command: ' + cmd);
+        }
+        
+        function sendChat() {
+            const input = document.getElementById('chatInput');
+            const msg = input.value.trim();
+            if (!msg) return;
+            const div = document.createElement('div');
+            div.style.padding = '5px 10px';
+            div.innerHTML = '<strong>Guest:</strong> ' + msg;
+            document.getElementById('chatMessages').appendChild(div);
+            input.value = '';
+        }
+        
+        function updateDisplay() {
+            document.getElementById('roverState').textContent = rover.status;
+            document.getElementById('roverBattery').textContent = rover.battery + '%';
+            document.getElementById('roverTemp').textContent = rover.temp.toFixed(1) + '°C';
+            document.getElementById('roverDistance').textContent = rover.distance.toFixed(0) + 'cm';
+        }
+        
+        function simulate() {
+            setInterval(() => {
+                rover.temp = 22 + Math.random() * 10;
+                rover.battery = Math.max(0, rover.battery - 0.01);
+                if (rover.status === 'PATROL') {
+                    rover.lat += (Math.random() - 0.5) * 0.001;
+                    rover.lng += (Math.random() - 0.5) * 0.001;
+                }
+                updateDisplay();
+                document.getElementById('statusDot').classList.add('on');
+                document.getElementById('statusText').textContent = 'Simulated';
+            }, 2000);
+        }
+        
+        initMaps();
+        simulate();
+    </script>
 </body>
 </html>
