@@ -24,6 +24,11 @@
     margin: 0;
     padding: 0;
     box-sizing: border-box;
+    pointer-events: auto;
+}
+
+button, a, input, .nav-item, .channel, .ctrl-btn, .map-btn, .btn {
+    pointer-events: auto !important;
 }
 
 body {
@@ -166,6 +171,7 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    pointer-events: auto;
 }
 
 .header {
@@ -248,6 +254,7 @@ body {
     flex: 1;
     overflow: auto;
     padding: 20px;
+    pointer-events: auto;
 }
 
 .view.active {
