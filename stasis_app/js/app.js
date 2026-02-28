@@ -173,6 +173,8 @@ function showLoginModal() {
     if (modal) {
         modal.classList.remove('hidden');
         modal.style.display = 'flex';
+        modal.style.visibility = 'visible';
+        modal.style.pointerEvents = 'auto';
         modal.style.zIndex = '99999';
     }
 }
@@ -182,6 +184,8 @@ function hideLoginModal() {
     if (modal) {
         modal.classList.add('hidden');
         modal.style.display = 'none';
+        modal.style.visibility = 'hidden';
+        modal.style.pointerEvents = 'none';
     }
 }
 
