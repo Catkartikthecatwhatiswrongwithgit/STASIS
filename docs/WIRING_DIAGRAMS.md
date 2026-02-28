@@ -6,18 +6,119 @@ This document provides comprehensive wiring diagrams for all components of the S
 
 ## Table of Contents
 
-1. [Rover Unit (ESP32-S3)](#1-rover-unit-esp32-s3)
-2. [Vision Module (ESP32-CAM)](#2-vision-module-esp32-cam)
-3. [Base Station (ESP32-C3 + RPi Zero)](#3-base-station-esp32-c3--rpi-zero)
-4. [Power Distribution](#4-power-distribution)
-5. [Important Safety Notes](#5-important-safety-notes)
+1. [System Overview](#1-system-overview)
+2. [Rover Unit (ESP32-S3)](#2-rover-unit-esp32-s3)
+3. [Vision Module (ESP32-CAM)](#3-vision-module-esp32-cam)
+4. [Base Station (ESP32-C3 + RPi Zero)](#4-base-station-esp32-c3--rpi-zero)
+5. [Power Distribution](#5-power-distribution)
+6. [Complete Pin Reference](#6-complete-pin-reference)
 
 ---
 
-## 1. Rover Unit (ESP32-S3)
+## 1. System Overview
+
+### Communication Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           ROVER UNIT                                        │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                   │
+│  │ ESP32-S3    │◄──►│ ESP32-CAM   │    │   Motors    │                   │
+│  │ (Main Ctrl) │    │  (Vision)   │    │  L9110S     │                   │
+│  │             │    │             │    │             │                   │
+│  │ UART1: Pi   │    │ Serial: S3  │    │ GPIO 4-7    │                   │
+│  │ GPIO 43,44  │    │             │    │             │                   │
+│  └──────┬──────┘    └──────┬──────┘    └─────────────┘                   │
+│         │                  │                                                   │
+│         │ ESP-NOW          │                                                   │
+└─────────┼──────────────────┼───────────────────────────────────────────────────┘
+          │                  │
+          ▼                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          BASE STATION                                       │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                    │
+│  │ ESP32-C3   │◄──►│ Raspberry   │    │   LCD       │                    │
+│  │  (Bridge)  │    │   Pi Zero   │    │  16x2 I2C   │                    │
+│  │             │    │             │    │             │                    │
+│  │ UART: Pi   │    │ Flask API   │    │ I2C         │                    │
+│  │ GPIO 20,21 │    │ Port 5000   │    │             │                    │
+│  └─────────────┘    └──────┬──────┘    └─────────────┘                    │
+└─────────────────────────────┼───────────────────────────────────────────────┘
+                              │
+                              │ HTTP
+                              ▼
+                    ┌─────────────────┐
+                    │  Web Dashboard │
+                    │ stasis_app/    │
+                    └─────────────────┘
+```
+
+### Connection Summary
+
+| Link | Protocol | Pins |
+|------|----------|------|
+| Rover ↔ Camera | Serial (UART0) | RX/GPIO1, TX/GPIO3 |
+| Rover ↔ Pi | UART1 | GPIO 43 (TX), GPIO 44 (RX) |
+| Rover ↔ Base | ESP-NOW | Wireless |
+| Base ↔ Pi | UART | GPIO 20 (TX), GPIO 21 (RX) |
+
+---
+
+## 2. Rover Unit (ESP32-S3)
 
 ### Complete Pin Map
 
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           ESP32-S3 DEVKIT                                  │
+│                                                                             │
+│  ┌─────┐                                                                     │
+│  │ USB │                                                                     │
+│  └──┬──┘                                                                     │
+│     │                                                                        │
+│  ┌──┴────────────────────────────────────────────────────────────────────┐  │
+│  │                                                                       │  │
+│  │  GPIO 1  ◄──── Battery Monitor (via voltage divider)                 │  │
+│  │  GPIO 2  ◄──── MPU6050 SCL (I2C Clock)                               │  │
+│  │  GPIO 3  ◄──── ESP32-CAM TX (Serial)                                │  │
+│  │  GPIO 4  ────► L9110S B-IA (Left Motor PWM)                          │  │
+│  │  GPIO 5  ────► L9110S B-IB (Left Motor Direction)                    │  │
+│  │  GPIO 6  ────► L9110S A-IA (Right Motor PWM)                         │  │
+│  │  GPIO 7  ────► L9110S A-IB (Right Motor Direction)                  │  │
+│  │  GPIO 8  ◄──── GPS TX (SoftwareSerial RX)                            │  │
+│  │  GPIO 9  ◄──── Ultrasonic Echo                                        │  │
+│  │  GPIO 10 ────► Ultrasonic Trig                                        │  │
+│  │  GPIO 12 ────► SIM800 RXD (optional)                                 │  │
+│  │  GPIO 13 ◄──── SIM800 TXD (optional)                                 │  │
+│  │  GPIO 21 ────► DS18B20 Data (with 4.7k pull-up)                     │  │
+│  │  GPIO 42 ◄──── MPU6050 SDA (I2C Data)                               │  │
+│  │  GPIO 43 ────► Pi RX (UART1 TX)                                      │  │
+│  │  GPIO 44 ◄──── Pi TX (UART1 RX)                                      │  │
+│  │  GPIO 45 ────► Status LED                                             │  │
+│  │  GPIO 48 ────► Buzzer (+)                                             │  │
+│  │                                                                       │  │
+│  │  3.3V   ────► MPU6050 VCC, GPS VCC (if 3.3V compatible)            │  │
+│  │  5V     ◄──── Buck Converter Output                                   │  │
+│  │  GND    ────► Common Ground (ALL components)                         │  │
+│  │                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### UART Connections
+
+```
+ESP32-S3                        Raspberry Pi (via ESP32-C3)
+┌─────────────┐                ┌─────────────┐
+│             │                │             │
+│ GPIO 43 (TX)│────────────────│ GPIO 20     │  ESP32-C3 RX
+│             │                │             │
+│ GPIO 44 (RX)│◄──────────────│ GPIO 21     │  ESP32-C3 TX
+│             │                │             │
+└─────────────┘                └─────────────┘
+
+Note: Connection is through ESP32-C3 bridge, not direct to Pi
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           ESP32-S3 DEVKIT                                    │
@@ -195,11 +296,37 @@ This document provides comprehensive wiring diagrams for all components of the S
 
 ---
 
-## 2. Vision Module (ESP32-CAM)
+## 3. Vision Module (ESP32-CAM)
 
 ### ESP32-CAM to ESP32-S3 Connection
 
+The ESP32-CAM uses **Serial (UART0)** to communicate with the ESP32-S3 rover:
+
 ```
+    ESP32-CAM                    ESP32-S3
+    ┌─────────────┐             ┌─────────────┐
+    │             │             │             │
+    │  U0T (TX)   │────────────►│ GPIO 1 (RX) │  Serial
+    │  U0R (RX)   │◄────────────│ GPIO 3 (TX) │  Serial
+    │             │             │             │
+    │  5V         │◄────────────│ 5V          │
+    │  GND        │────────────►│ GND         │
+    │             │             │             │
+    └─────────────┘             └─────────────┘
+    
+    Note: Uses Serial (UART0), not UART1
+```
+
+### Communication Protocol
+
+| From Rover | From Camera | Description |
+|------------|-------------|-------------|
+| Commands: 0x01-0x04 | `HAZARD:FIRE` | Fire detected |
+| | `HAZARD:MOTION` | Motion detected |
+| | `HAZARD:HUMAN` | Human detected |
+| | `CAM:READY` | Camera initialized |
+| | `CAM:ERROR` | Camera error |
+| | `CLEAR` | No hazards |
     ESP32-CAM                    ESP32-S3
     ┌─────────────┐             ┌─────────────┐
     │             │             │             │
@@ -241,62 +368,47 @@ This document provides comprehensive wiring diagrams for all components of the S
 
 ---
 
-## 3. Base Station (ESP32-C3 + RPi Zero)
+## 4. Base Station (ESP32-C3 + RPi Zero)
 
-### Architecture Overview
-
-The ESP32-C3 serves as a **GPIO Extender and Display Controller** for the Raspberry Pi Zero:
-- **Communication Bridge**: ESP-NOW (wireless) ↔ UART (wired to RPi0W)
-- **Display Controller**: LCD display shows rover status and location
-- **Data Router**: Routes AprilTag data from rover → RPi0W for processing → back to rover for alignment
-- **Power Management**: Powered from RPi0W 5V pins (bottom row only)
-
-### ESP32-C3 to Raspberry Pi Zero (Bottom Row Only)
-
-**IMPORTANT**: The C3 connects ONLY to the bottom row of the RPi0W GPIO header (the row starting with double 5V - pins 2, 4, 6, 8, 10...). This leaves the top row free for other peripherals.
+### ESP32-C3 to Raspberry Pi Zero
 
 ```
-    ESP32-C3                    Raspberry Pi Zero (Bottom Row Only)
+    ESP32-C3                    Raspberry Pi Zero
     ┌─────────────┐             ┌─────────────────────┐
     │             │             │                     │
-    │  GPIO 21    │────────────►│ Pin 10 (GPIO 15 RX) │  UART TX → RPi RX
+    │  GPIO 21    │────────────►│ Pin 10 (GPIO 15 RX)│  UART TX → RPi RX
     │  (TX)       │             │                     │
     │             │             │                     │
-    │  GPIO 20    │◄────────────│ Pin 8 (GPIO 14 TX)  │  UART RX ← RPi TX
+    │  GPIO 20    │◄────────────│ Pin 8 (GPIO 14 TX) │  UART RX ← RPi TX
     │  (RX)       │             │                     │
     │             │             │                     │
-    │  5V         │◄────────────│ Pin 2 (5V)          │  Power from RPi
+    │  5V         │◄────────────│ Pin 2 (5V)         │  Power from RPi
     │             │             │                     │
-    │  GND        │────────────►│ Pin 6 (GND)         │  Common Ground
+    │  GND        │────────────►│ Pin 6 (GND)        │  Common Ground
     │             │             │                     │
     └─────────────┘             └─────────────────────┘
 ```
 
-### Raspberry Pi Zero GPIO Header (Pin Usage)
+### Raspberry Pi Zero GPIO Header
 
 ```
-    Raspberry Pi Zero GPIO Header (40-pin)
+    40-pin GPIO Header
     ┌────────────────────────────────────────┐
-    │  3.3V  [01] [02] 5V  ─────► C3 Power   │  BOTTOM ROW (Even pins)
-    │  SDA   [03] [04] 5V  ─────► C3 Alt PWR │  ├── Used by ESP32-C3
-    │  SCL   [05] [06] GND ─────► C3 GND     │  │   Pin 2: 5V Power
-    │  GPIO4 [07] [08] TXD ─────► C3 RX      │  │   Pin 4: 5V (alternate)
-    │  GND   [09] [10] RXD ◄───── C3 TX      │  │   Pin 6: GND
-    │  GPIO17[11] [12] GPIO18                │  │   Pin 8: TXD → C3 RX
-    │  GPIO27[13] [14] GND                   │  │   Pin 10: RXD ← C3 TX
-    │  GPIO22[15] [16] GPIO23                │  │
-    │  3.3V  [17] [18] GPIO24                │  TOP ROW (Odd pins)
-    │  MOSI  [19] [20] GND                   │  └── Free for other uses
-    │  MISO  [21] [22] GPIO25                │
-    │  SCLK  [23] [24] CE0                   │
-    │  GND   [25] [26] CE1                   │
-    │        [27] [28]                       │
-    │        [29] [30] GND                   │
-    │        [31] [32]                       │
-    │        [33] [34] GND                   │
-    │        [35] [36]                       │
-    │        [37] [38]                       │
-    │  GND   [39] [40]                       │
+    │ 3.3V  [01] [02] 5V  ───► ESP32-C3    │  BOTTOM ROW (Even pins)
+    │ SDA   [03] [04] 5V                    │  
+    │ SCL   [05] [06] GND ───► ESP32-C3    │  
+    │ GPIO4 [07] [08] TXD ───► ESP32-C3 RX  │  
+    │ GND   [09] [10] RXD ◄─── ESP32-C3 TX  │  
+    │ GPIO17[11] [12] GPIO18                │  TOP ROW - Available
+    │ GPIO27[13] [14] GND                   │  for LCD, sensors
+    │ GPIO22[15] [16] GPIO23                │  
+    │ 3.3V  [17] [18] GPIO24                │  
+    │ MOSI  [19] [20] GND                   │  
+    │ MISO  [21] [22] GPIO25                │  
+    │ SCLK  [23] [24] CE0                   │  
+    │ GND   [25] [26] CE1                   │  
+    └────────────────────────────────────────┘
+```
     └────────────────────────────────────────┘
 ```
 
@@ -558,37 +670,44 @@ The LCD display is connected to the ESP32-C3, NOT the RPi Zero directly. The C3 
 
 ---
 
-## Quick Reference Card
+## 6. Complete Pin Reference
 
 ### Rover (ESP32-S3) Pin Summary
 
-| GPIO | Function | Connection |
-|------|----------|------------|
-| 1 | ADC | Battery monitor |
-| 2 | I2C SCL | MPU6050 |
-| 4 | PWM | Motor Left Speed |
-| 5 | Digital | Motor Left Direction |
-| 6 | PWM | Motor Right Speed |
-| 7 | Digital | Motor Right Direction |
-| 8 | Serial RX | GPS TX |
-| 12 | Digital | Ultrasonic Trig |
-| 13 | Digital | Ultrasonic Echo |
-| 15 | Serial TX | SIM800 RX |
-| 16 | Serial RX | SIM800 TX |
-| 17 | Serial RX | CAM TX |
-| 18 | Serial TX | CAM RX |
-| 19 | Serial TX | GPS RX |
-| 21 | OneWire | DS18B20 |
-| 42 | I2C SDA | MPU6050 |
-| 45 | Digital | Status LED |
-| 48 | Digital | Buzzer |
+| GPIO | Function | Connection | Notes |
+|------|----------|------------|-------|
+| 1 | Serial RX | ESP32-CAM TX | UART0 |
+| 2 | I2C SCL | MPU6050 | |
+| 3 | Serial TX | ESP32-CAM RX | UART0 |
+| 4 | PWM | Motor Left Speed | L9110S B-IA |
+| 5 | Digital | Motor Left Direction | L9110S B-IB |
+| 6 | PWM | Motor Right Speed | L9110S A-IA |
+| 7 | Digital | Motor Right Direction | L9110S A-IB |
+| 8 | Serial RX | GPS TX | |
+| 9 | Digital | Ultrasonic Echo | |
+| 10 | Digital | Ultrasonic Trig | |
+| 12 | Digital | SIM800 RX (optional) | |
+| 13 | Digital | SIM800 TX (optional) | |
+| 21 | OneWire | DS18B20 | 4.7k pull-up |
+| 42 | I2C SDA | MPU6050 | |
+| 43 | Serial TX | ESP32-C3 RX | UART1 |
+| 44 | Serial RX | ESP32-C3 TX | UART1 |
+| 45 | Digital | Status LED | |
+| 48 | Digital | Buzzer | |
+
+### Camera (ESP32-CAM) Pin Summary
+
+| Pin | Function | Connection |
+|-----|----------|------------|
+| U0T | Serial TX | ESP32-S3 GPIO 1 |
+| U0R | Serial RX | ESP32-S3 GPIO 3 |
+| 5V | Power | Buck Converter 5V |
+| GND | Ground | Common GND |
 
 ### Base Station Pin Summary
 
 | ESP32-C3 GPIO | Function | Connection |
 |---------------|----------|------------|
-| 4 | I2C SDA | LCD Display |
-| 5 | I2C SCL | LCD Display |
 | 8 | LED | Built-in Status |
 | 20 | UART RX | RPi Zero TXD (Pin 8) |
 | 21 | UART TX | RPi Zero RXD (Pin 10) |
@@ -602,6 +721,40 @@ The LCD display is connected to the ESP32-C3, NOT the RPi Zero directly. The C3 
 
 ---
 
-*Document Version: 2.1*  
-*Last Updated: February 2026*  
-*Updated with Status LED GPIO 45 addition*
+### Complete Data Flow
+
+```
+┌──────────────┐     Serial      ┌──────────────┐    UART1    ┌──────────────┐
+│ ESP32-CAM   │◄──────────────►│  ESP32-S3   │◄───────────►│  ESP32-C3   │
+│             │   (UART0)       │   (Rover)   │  (GPIO 43/44)│  (Bridge)   │
+└──────────────┘                 └──────────────┘              └──────┬───────┘
+      │                                                               │
+      │ HAZARD: messages                                              │ UART
+      │ forwarded                                                     │ (GPIO 20/21)
+      │                                                               ▼
+      │                                              ┌───────────────────────┐
+      │                                              │    Raspberry Pi Zero  │
+      │                                              │                       │
+      │                                              │  station_monitor.py  │
+      │                                              │  - Parse telemetry   │
+      │                                              │  - Store SQLite DB  │
+      │                                              │  - Serve API         │
+      │                                              │                       │
+      │                                              │  /api/status         │
+      │                                              │  /api/command        │
+      │                                              │  /api/alerts         │
+      │                                              └───────────────────────┘
+      │                                                        │
+      │                                                        │ HTTP
+      ▼                                                        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Web Dashboard (stasis_app/index.html)        │
+│                                                                     │
+│  Dashboard │ Map │ Stream │ Chat │ Fencing                         │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+*Document Version: 3.0*  
+*Last Updated: February 2026*
