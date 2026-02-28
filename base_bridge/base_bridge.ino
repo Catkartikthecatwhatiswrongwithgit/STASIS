@@ -505,20 +505,47 @@ void setup() {
 }
 
 // ============================================================================
+// ROVER MESSAGE HANDLING
+// ============================================================================
+
+void processRoverMessages() {
+    if (!Serial1.available()) return;
+    
+    String line = Serial1.readStringUntil('\n');
+    line.trim();
+    
+    if (line.length() == 0) return;
+    
+    // Check if it's JSON (starts with {)
+    if (line.startsWith("{")) {
+        // Forward JSON to Pi as-is
+        Serial.println(line);
+    }
+    else {
+        // Forward non-JSON messages (HAZARD:, CAM:, ERROR:) to Pi
+        Serial.println(line);
+        blinkLED(1, 30);
+    }
+}
+
+// ============================================================================
 // MAIN LOOP
 // ============================================================================
 void loop() {
-  // Update LED blink pattern
-  updateLED();
-  
-  // Handle web server requests
-  statusServer.handleClient();
-  
-  // Process commands from Pi
-  processPiCommands();
-  
-  // Send queued commands to rover
-  sendQueuedCommands();
+    // Update LED blink pattern
+    updateLED();
+    
+    // Handle web server requests
+    statusServer.handleClient();
+    
+    // Process commands from Pi
+    processPiCommands();
+    
+    // Process messages from rover
+    processRoverMessages();
+    
+    // Send queued commands to rover
+    sendQueuedCommands();
   
   // Periodic heartbeat
   if (millis() - lastHeartbeat > HEARTBEAT_MS) {

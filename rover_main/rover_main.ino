@@ -79,12 +79,13 @@ struct DockCommand {
 // =============================================================================
 
 enum RoverState {
-    STATE_PATROL = 0,       // Normal patrol mode
-    STATE_RESEARCH,         // Research/data collection
-    STATE_ALERT,            // Hazard detected - investigating
-    STATE_RETURN_TO_BASE,   // Low battery or manual recall
-    STATE_DOCKING,          // AprilTag docking procedure
-    STATE_DOCKED            // Successfully docked
+    STATE_IDLE = 0,          // Idle/standby
+    STATE_PATROL,             // Normal patrol mode
+    STATE_RESEARCH,           // Research/data collection
+    STATE_ALERT,              // Hazard detected - investigating
+    STATE_RETURN_TO_BASE,     // Low battery or manual recall
+    STATE_DOCKING,            // AprilTag docking procedure
+    STATE_DOCKED              // Successfully docked
 };
 
 enum AlertType {
@@ -99,8 +100,8 @@ enum AlertType {
 // =============================================================================
 
 // Current rover state
-volatile RoverState currentState = STATE_PATROL;
-volatile RoverState previousState = STATE_PATROL;
+volatile RoverState currentState = STATE_IDLE;
+volatile RoverState previousState = STATE_IDLE;
 
 // Control inputs
 volatile int8_t currentTurn = 0;
@@ -135,6 +136,86 @@ const float LOW_BATTERY_THRESHOLD = 30.0;
 
 // Safety
 volatile bool estopTriggered = false;
+
+// =============================================================================
+// COMMAND PARSING
+// =============================================================================
+
+String commandBuffer = "";
+
+void processCommand(String cmd) {
+    cmd.trim();
+    cmd.toUpperCase();
+    
+    if (cmd == "STOP") {
+        currentState = STATE_IDLE;
+        currentSpeed = 0;
+        currentTurn = 0;
+        drive(0, 0);
+        Serial.println("CMD:STOP_OK");
+    }
+    else if (cmd == "FORWARD") {
+        currentTurn = 0;
+        currentSpeed = 50;
+        if (currentState == STATE_IDLE) currentState = STATE_PATROL;
+    }
+    else if (cmd == "BACKWARD") {
+        currentTurn = 0;
+        currentSpeed = 50;
+        drive(0, 0); // Just stop for now
+    }
+    else if (cmd == "LEFT") {
+        currentTurn = -50;
+        currentSpeed = 30;
+        if (currentState == STATE_IDLE) currentState = STATE_PATROL;
+    }
+    else if (cmd == "RIGHT") {
+        currentTurn = 50;
+        currentSpeed = 30;
+        if (currentState == STATE_IDLE) currentState = STATE_PATROL;
+    }
+    else if (cmd == "PATROL" || cmd == "START_PATROL") {
+        currentState = STATE_PATROL;
+        currentSpeed = 40;
+        currentTurn = 0;
+    }
+    else if (cmd == "STOP_PATROL") {
+        currentState = STATE_IDLE;
+        currentSpeed = 0;
+    }
+    else if (cmd == "HOME" || cmd == "RETURN_HOME" || cmd == "RETURN_BASE") {
+        currentState = STATE_RETURN_TO_BASE;
+        currentSpeed = 40;
+    }
+    else if (cmd == "RESEARCH" || cmd == "START_RESEARCH") {
+        currentState = STATE_RESEARCH;
+        currentSpeed = 30;
+    }
+    else if (cmd == "DOCKING" || cmd == "ENABLE_DOCKING") {
+        currentState = STATE_DOCKING;
+        currentSpeed = 0;
+    }
+    else if (cmd == "DISABLE_DOCKING") {
+        currentState = STATE_IDLE;
+    }
+    else if (cmd == "RESET") {
+        currentState = STATE_IDLE;
+        currentSpeed = 0;
+        currentTurn = 0;
+        currentAlert = ALERT_NONE;
+        estopTriggered = false;
+        Serial.println("CMD:RESET_OK");
+    }
+    else if (cmd == "ALERT") {
+        currentState = STATE_ALERT;
+        currentSpeed = 0;
+    }
+    else {
+        Serial.println("CMD:UNKNOWN");
+    }
+    
+    lastCommandTime = millis();
+}
 
 // =============================================================================
 // MOTOR CONTROL - L9110S DRIVER
@@ -336,6 +417,11 @@ void updateStateMachine() {
     previousState = currentState;
     
     switch (currentState) {
+        case STATE_IDLE:
+            // Stay idle until command received
+            // Can be woken by commands from UART
+            break;
+            
         case STATE_PATROL:
             // Transitions:
             if (fireDetected || humanDetected || tiltDetected) {
@@ -416,6 +502,13 @@ void executeState() {
     uint32_t currentTime = millis();
     
     switch (currentState) {
+        case STATE_IDLE:
+            // Full stop - waiting for commands
+            currentTurn = 0;
+            currentSpeed = 0;
+            drive(0, 0);
+            break;
+            
         case STATE_PATROL:
             // Normal patrol behavior
             // Could implement waypoint following or random walk
@@ -479,24 +572,70 @@ void executeState() {
 
 /**
  * UART receive task - from Pi Zero
+ * Handles both text commands and docking commands
  */
 void uartTask(void* parameter) {
     uint8_t buffer[1];
     DockCommand cmd;
+    static String textCmd = "";
     
     while (true) {
         int length = uart_read_bytes(UART_NUM, buffer, 1, pdMS_TO_TICKS(10));
         if (length > 0) {
-            if (parseDockCommand(buffer[0], &cmd)) {
-                // Valid command received
-                currentTurn = cmd.turn;
-                currentSpeed = cmd.speed;
-                docked = (cmd.docked == 1);
-                lastCommandTime = millis();
-                estopTriggered = false;
+            char c = (char)buffer[0];
+            
+            // Check for docking protocol (starts with 0xAA)
+            if (c == 0xAA && currentState == STATE_DOCKING) {
+                if (parseDockCommand(buffer[0], &cmd)) {
+                    currentTurn = cmd.turn;
+                    currentSpeed = cmd.speed;
+                    docked = (cmd.docked == 1);
+                    lastCommandTime = millis();
+                    estopTriggered = false;
+                }
+            }
+            // Text command parsing
+            else if (c == '\n' || c == '\r') {
+                if (textCmd.length() > 0) {
+                    processCommand(textCmd);
+                    textCmd = "";
+                }
+            }
+            else if (c >= 32) {  // Printable characters
+                textCmd += c;
+                if (textCmd.length() >= 16) {
+                    textCmd = "";  // Reset if too long
+                }
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+/**
+ * Camera forwarding task
+ * Reads from Serial (camera) and forwards to Pi via UART1
+ */
+void cameraTask(void* parameter) {
+    while (true) {
+        if (Serial.available()) {
+            String line = Serial.readStringUntil('\n');
+            line.trim();
+            if (line.length() > 0) {
+                // Forward to Pi via UART
+                line += "\n";
+                uart_write_bytes(UART_NUM, line.c_str(), line.length());
+                // Also parse for hazard detection
+                if (line.startsWith("HAZARD:")) {
+                    String hazardType = line.substring(7);
+                    hazardType.trim();
+                    if (hazardType == "FIRE") fireDetected = true;
+                    else if (hazardType == "MOTION") humanDetected = true;
+                    else if (hazardType == "HUMAN") humanDetected = true;
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -583,6 +722,7 @@ void setup() {
     
     // Create tasks
     xTaskCreatePinnedToCore(uartTask, "UART", 2048, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(cameraTask, "Camera", 2048, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(sensorTask, "Sensors", 2048, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(stateTask, "State", 2048, NULL, 1, NULL, 1);
     
