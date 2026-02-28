@@ -190,7 +190,6 @@ function showApp() {
     connectWebSocket();
     initChat();
     initSettings();
-    initTeamView();
     updateUIForConnection(false);
 }
 
@@ -702,36 +701,6 @@ function updateUserPanel() {
     if (nameEl && state.currentUser) nameEl.textContent = state.currentUser.name;
     if (roleEl && state.currentUser) roleEl.textContent = state.currentUser.role || 'User';
     if (avatarEl && state.currentUser) avatarEl.style.background = state.currentUser.color || '#8B4513';
-}
-
-// ============================================
-// TEAM VIEW
-// ============================================
-function initTeamView() {
-    renderTeamMembers();
-}
-
-function renderTeamMembers() {
-    var mainTeamGrid = document.getElementById('mainTeamGrid');
-    var supportersGrid = document.getElementById('supportersGrid');
-    
-    if (mainTeamGrid) {
-        mainTeamGrid.innerHTML = 
-            '<div class="team-card"><div class="member-avatar">K</div><div class="member-info"><span class="member-name">Kartik</span><span class="member-role">Team Leader</span></div><span class="rank-badge admin">Admin</span></div>' +
-            '<div class="team-card"><div class="member-avatar">H</div><div class="member-info"><span class="member-name">Harish</span><span class="member-role">Team Member</span></div><span class="rank-badge moderator">Mod</span></div>' +
-            '<div class="team-card"><div class="member-avatar">R</div><div class="member-info"><span class="member-name">Ryan Ahmed</span><span class="member-role">Team Member</span></div><span class="rank-badge officer">Officer</span></div>' +
-            '<div class="team-card"><div class="member-avatar">M</div><div class="member-info"><span class="member-name">Mohaideen Ijaz</span><span class="member-role">Team Member</span></div><span class="rank-badge officer">Officer</span></div>' +
-            '<div class="team-card"><div class="member-avatar">S</div><div class="member-info"><span class="member-name">Swethen</span><span class="member-role">Team Member</span></div><span class="rank-badge officer">Officer</span></div>';
-    }
-    
-    if (supportersGrid) {
-        supportersGrid.innerHTML = 
-            '<div class="team-card"><div class="member-avatar">St</div><div class="member-info"><span class="member-name">Stephen</span><span class="member-role">Supporter</span></div><span class="rank-badge supporter">Supporter</span></div>' +
-            '<div class="team-card"><div class="member-avatar">Kr</div><div class="member-info"><span class="member-name">Krish</span><span class="member-role">Supporter</span></div><span class="rank-badge supporter">Supporter</span></div>' +
-            '<div class="team-card"><div class="member-avatar">I</div><div class="member-info"><span class="member-name">Inba</span><span class="member-role">Supporter</span></div><span class="rank-badge supporter">Supporter</span></div>' +
-            '<div class="team-card"><div class="member-avatar">B</div><div class="member-info"><span class="member-name">Baavasri</span><span class="member-role">Supporter</span></div><span class="rank-badge supporter">Supporter</span></div>' +
-            '<div class="team-card"><div class="member-avatar">J</div><div class="member-info"><span class="member-name">Janane</span><span class="member-role">Supporter</span></div><span class="rank-badge supporter">Supporter</span></div>';
-    }
 }
 
 // ============================================
