@@ -305,7 +305,13 @@ function centerOnBase() {
 function startFencingMode() {
     state.fencingMode = true;
     showNotification('Fencing Mode', 'Click and drag to draw patrol area', 'info');
-    if (state.fencingMap) state.fencingMap.getContainer().style.cursor = 'crosshair';
+    if (state.fencingMap) {
+        state.fencingMap.getContainer().style.cursor = 'crosshair';
+        state.fencingMap.dragging.disable();
+        state.fencingMap.touchZoom.disable();
+        state.fencingMap.doubleClickZoom.disable();
+        state.fencingMap.scrollWheelZoom.disable();
+    }
 }
 
 function handleFenceMouseDown(e) {
@@ -366,7 +372,13 @@ function saveFence() {
 function toggleFencingMode() {
     if (state.fencingMode) {
         state.fencingMode = false;
-        if (state.fencingMap) state.fencingMap.getContainer().style.cursor = '';
+        if (state.fencingMap) {
+            state.fencingMap.getContainer().style.cursor = '';
+            state.fencingMap.dragging.enable();
+            state.fencingMap.touchZoom.enable();
+            state.fencingMap.doubleClickZoom.enable();
+            state.fencingMap.scrollWheelZoom.enable();
+        }
     } else {
         startFencingMode();
     }
