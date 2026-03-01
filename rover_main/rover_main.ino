@@ -335,6 +335,7 @@ bool isGPSValid() {
 static bool chargeStarted = false;
 static uint32_t chargeStartTime = 0;
 static bool chargeComplete = false;
+static bool chargeBeepDone = false;  // Reset on undock
 
 void onDockDetected() {
     chargeStarted = true;
@@ -348,6 +349,7 @@ void onUndocked() {
     chargeStarted = false;
     chargeStartTime = 0;
     chargeComplete = false;
+    chargeBeepDone = false;  // Reset for next charge cycle
     
     Serial.println("CHARGING: Undocked - resetting charge state");
 }
@@ -379,76 +381,182 @@ bool hasChargingStarted() {
 }
 
 // =============================================================================
-// GSM ALERT ROUTINES - SIM800L
+// GSM ALERT ROUTINES - HARDENED SIM800L
 // =============================================================================
-// Sends SMS alerts for critical events:
-// - Geofence violation
-// - Hazard detection
-// Non-blocking with timeout
+// Non-blocking with retry, network registration, graceful failure
+// Status: Ready, Searching, NoSim, Failed
+
+#define GSM_INIT_TIMEOUT_MS  30000   // 30 seconds to initialize
+#define SMS_RETRY_MAX        3        // Max SMS retry attempts
+#define SMS_RETRY_DELAY_MS  5000     // 5 seconds between retries
+
+enum GSMStatus {
+    GSM_OFFLINE = 0,
+    GSM_INIT,
+    GSM_SEARCHING,
+    GSM_READY,
+    GSM_FAILED
+};
 
 struct GSMState {
-    bool initialized;
-    bool ready;
+    GSMStatus status;
     uint32_t initStartTime;
+    uint8_t retryCount;
     String phoneNumber;
+    bool smsInProgress;
 };
 
 static GSMState gsm = {
-    false, false, 0, "+1234567890"  // Configure your alert number
+    GSM_OFFLINE, 0, 0, "+1234567890", false
 };
 
-bool initGSM() {
-    if (gsm.initialized) return gsm.ready;
+/**
+ * Non-blocking GSM initialization
+ * Call repeatedly from task
+ * Returns true when ready to send SMS
+ */
+bool updateGSM() {
+    uint32_t now = millis();
     
-    Serial2.println("AT");
-    delay(500);
-    
-    String response = "";
-    while (Serial2.available()) {
-        response += (char)Serial2.read();
+    switch (gsm.status) {
+        case GSM_OFFLINE:
+            // Start initialization
+            gsm.status = GSM_INIT;
+            gsm.initStartTime = now;
+            gsm.retryCount = 0;
+            Serial.println("GSM: Starting init...");
+            Serial2.begin(9600);
+            break;
+            
+        case GSM_INIT:
+            // Wait for AT response
+            if (now - gsm.initStartTime > 2000) {
+                Serial2.println("AT");
+                gsm.initStartTime = now;
+            }
+            if (Serial2.available()) {
+                String response = "";
+                while (Serial2.available()) {
+                    response += (char)Serial2.read();
+                }
+                if (response.indexOf("OK") >= 0) {
+                    gsm.status = GSM_SEARCHING;
+                    gsm.initStartTime = now;
+                    Serial.println("GSM: AT OK - searching network...");
+                }
+            }
+            // Timeout after 30 seconds
+            if (now - gsm.initStartTime > GSM_INIT_TIMEOUT_MS) {
+                gsm.status = GSM_FAILED;
+                Serial.println("GSM: Init failed - timeout");
+            }
+            break;
+            
+        case GSM_SEARCHING:
+            // Wait for network registration
+            if (now - gsm.initStartTime > 1000) {
+                Serial2.println("AT+CREG?");
+                gsm.initStartTime = now;
+            }
+            if (Serial2.available()) {
+                String response = "";
+                while (Serial2.available()) {
+                    response += (char)Serial2.read();
+                }
+                // CREG: 1 = Registered, home, 5 = Registered, roaming
+                if (response.indexOf(",1") >= 0 || response.indexOf(",5") >= 0) {
+                    gsm.status = GSM_READY;
+                    Serial.println("GSM: Network registered - READY");
+                }
+            }
+            // Timeout after 60 seconds
+            if (now - gsm.initStartTime > 60000) {
+                gsm.status = GSM_FAILED;
+                Serial.println("GSM: Network registration failed");
+            }
+            break;
+            
+        case GSM_READY:
+            // Ready for SMS
+            break;
+            
+        case GSM_FAILED:
+            // Attempt recovery every 60 seconds
+            if (now - gsm.initStartTime > 60000) {
+                gsm.status = GSM_OFFLINE;
+                gsm.initStartTime = now;
+            }
+            break;
     }
     
-    if (response.indexOf("OK") >= 0) {
-        Serial2.println("AT+CMGF=1");  // Text mode
-        delay(200);
-        gsm.ready = true;
-        gsm.initialized = true;
-        Serial.println("GSM: Ready");
-        return true;
-    }
-    
-    gsm.initialized = true;
-    Serial.println("GSM: Not ready");
-    return false;
+    return (gsm.status == GSM_READY);
 }
 
-bool sendSMS(const char* message) {
-    if (!gsm.ready) {
-        Serial.println("GSM: Not ready for SMS");
+/**
+ * Send SMS with retry logic (non-blocking)
+ * Returns: true if sent, false if failed/retrying
+ */
+bool sendSMS_Hardened(const char* message) {
+    static uint32_t retryStartTime = 0;
+    static const char* pendingMessage = NULL;
+    
+    if (gsm.status != GSM_READY) {
         return false;
     }
     
-    Serial2.print("AT+CMGS=\"");
-    Serial2.print(gsm.phoneNumber.c_str());
-    Serial2.println("\"");
-    delay(500);
-    
-    Serial2.print(message);
-    Serial2.write(26);  // Ctrl+Z to send
-    delay(2000);
-    
-    String response = "";
-    while (Serial2.available()) {
-        response += (char)Serial2.read();
+    // If we have a pending message being sent
+    if (pendingMessage != NULL) {
+        if (Serial2.available()) {
+            String response = "";
+            while (Serial2.available()) {
+                response += (char)Serial2.read();
+            }
+            
+            if (response.indexOf(">") >= 0) {
+                // Ready for message body
+                Serial2.print(pendingMessage);
+                Serial2.write(26);  // Ctrl+Z
+                retryStartTime = millis();
+            }
+            else if (response.indexOf("OK") >= 0) {
+                // Message sent successfully
+                Serial.println("GSM: SMS sent successfully");
+                pendingMessage = NULL;
+                gsm.retryCount = 0;
+                return true;
+            }
+            else if (response.indexOf("ERROR") >= 0 || (millis() - retryStartTime > 10000)) {
+                // Failed - retry
+                gsm.retryCount++;
+                if (gsm.retryCount >= SMS_RETRY_MAX) {
+                    Serial.println("GSM: SMS failed after max retries");
+                    pendingMessage = NULL;
+                    gsm.retryCount = 0;
+                    return false;
+                }
+                Serial.print("GSM: SMS retry ");
+                Serial.println(gsm.retryCount);
+                retryStartTime = millis();
+                // Will retry in next call
+            }
+        }
+        return false;  // Still in progress
     }
     
-    if (response.indexOf("OK") >= 0) {
-        Serial.println("GSM: SMS sent");
-        return true;
+    // Start new SMS
+    if (gsm.retryCount < SMS_RETRY_MAX) {
+        pendingMessage = message;
+        Serial2.print("AT+CMGS=\"");
+        Serial2.print(gsm.phoneNumber);
+        Serial2.println("\"");
+        retryStartTime = millis();
     }
     
-    Serial.println("GSM: SMS failed");
     return false;
+}
+
+bool isGSReady() {
+    return (gsm.status == GSM_READY);
 }
 
 void sendGeofenceAlert() {
@@ -456,26 +564,28 @@ void sendGeofenceAlert() {
     
     char msg[100];
     snprintf(msg, sizeof(msg), 
-        "STASIS ALERT: Geofence violation! Lat: %.6f, Lon: %.6f",
+        "STASIS: Geofence breach! Lat: %.5f Lon: %.5f",
         (double)latitude, (double)longitude);
     
-    sendSMS(msg);
-    alertSent = true;
+    if (sendSMS_Hardened(msg)) {
+        alertSent = true;
+    }
 }
 
 void sendHazardAlert(AlertType type) {
     if (alertSent) return;
     
-    const char* msg = "STASIS ALERT: Hazard detected! Investigating.";
+    const char* msg = "STASIS: Hazard detected";
     
     if (type == ALERT_FIRE) {
-        msg = "STASIS ALERT: Fire detected! Immediate attention required.";
+        msg = "STASIS: FIRE DETECTED! Immediate attention!";
     } else if (type == ALERT_EARTHQUAKE) {
-        msg = "STASIS ALERT: Seismic activity detected!";
+        msg = "STASIS: Seismic activity detected";
     }
     
-    sendSMS(msg);
-    alertSent = true;
+    if (sendSMS_Hardened(msg)) {
+        alertSent = true;
+    }
 }
 
 // =============================================================================
@@ -770,16 +880,43 @@ float readTemperature() {
 }
 
 // =============================================================================
-// BATTERY MONITORING - Updated for 2S Li-ion (7.4V nominal)
+// BATTERY MONITORING - HARDENED for 2S Li-ion
 // =============================================================================
 
+#define VOLTAGE_SAMPLES 8        // Moving average samples
+#define LOW_BATTERY_VOLTAGE 6.2  // Absolute cutoff (not percentage)
+
+static float voltageBuffer[VOLTAGE_SAMPLES];
+static uint8_t voltageIndex = 0;
+static bool voltageBufferFull = false;
+
+/**
+ * Smoothed battery reading with moving average
+ */
+float getSmoothedVoltage() {
+    float sum = 0;
+    uint8_t count = voltageBufferFull ? VOLTAGE_SAMPLES : voltageIndex;
+    
+    for (uint8_t i = 0; i < count; i++) {
+        sum += voltageBuffer[i];
+    }
+    
+    return (count > 0) ? (sum / count) : 0;
+}
+
 void updateBattery() {
-    // Read ADC and calculate battery percentage
-    // 2S Li-ion: 6.0V (empty) to 8.4V (full)
-    // Voltage divider: 30k + 10k = 40k total, ratio = 10/40 = 0.25
+    // Read raw ADC
     int adcValue = analogRead(BATTERY_ADC);
     float adcVoltage = (adcValue / 4095.0) * 3.3;
-    batteryVoltage = adcVoltage / 0.25;
+    float rawVoltage = adcVoltage / 0.25;  // Voltage divider ratio
+    
+    // Add to moving average buffer
+    voltageBuffer[voltageIndex] = rawVoltage;
+    voltageIndex = (voltageIndex + 1) % VOLTAGE_SAMPLES;
+    if (voltageIndex == 0) voltageBufferFull = true;
+    
+    // Use smoothed voltage
+    batteryVoltage = getSmoothedVoltage();
     
     // Percentage: 6.0V = 0%, 8.4V = 100%
     batteryPercent = ((batteryVoltage - 6.0) / 2.4) * 100.0;
@@ -796,18 +933,40 @@ void updateBattery() {
     
     // Enable low power mode
     lowPowerMode = (batteryPercent < LOW_BATTERY_THRESHOLD);
+    
+    // Absolute voltage cutoff protection
+    if (batteryVoltage < LOW_BATTERY_VOLTAGE && currentState != STATE_DOCKED_CHARGING) {
+        // Force safe idle on critical low voltage
+        currentState = STATE_SAFE_IDLE;
+        currentSpeed = 0;
+        currentTurn = 0;
+        drive(0, 0);
+        Serial.println("BATTERY: CRITICAL LOW - shutdown");
+    }
 }
 
 // =============================================================================
-// STATE MACHINE LOGIC - Updated for charging and geofence
+// STATE MACHINE LOGIC - HARDENED
 // =============================================================================
+
+// State transition guards
+#define STATE_MIN_TIME_MS      500     // Minimum time in state
+#define ALERT_CONFIRM_TIME_MS  2000    // Confirm alert before taking action
 
 /**
  * Check transitions between states
  * Event-driven, non-blocking, robust to sensor noise
+ * Includes guards against rapid state flapping
  */
 void updateStateMachine() {
     uint32_t currentTime = millis();
+    uint32_t timeInState = currentTime - stateEntryTime;
+    
+    // Guard: Ignore transitions if in state < minimum time
+    if (timeInState < STATE_MIN_TIME_MS) {
+        return;
+    }
+    
     previousState = currentState;
     
     switch (currentState) {
@@ -1210,6 +1369,9 @@ void sensorTask(void* parameter) {
         
         // Update battery and dock detection
         updateBattery();
+        
+        // Update GSM (non-blocking)
+        updateGSM();
         
         // GPS is handled by gpsTask
         
