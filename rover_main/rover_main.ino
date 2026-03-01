@@ -676,8 +676,13 @@ void processCommand(String cmd) {
 }
 
 // =============================================================================
-// MOTOR CONTROL - L9110S DRIVER
+// MOTOR CONTROL - L9110S DRIVER - HARDENED
 // =============================================================================
+
+// Motor speed ramping for smooth changes
+#define SPEED_RAMP_RATE  5   // Speed change per cycle (0-255)
+static int8_t currentLeftSpeed = 0;
+static int8_t currentRightSpeed = 0;
 
 /**
  * Set motor speed and direction for single motor
@@ -697,49 +702,49 @@ void setMotor(uint8_t pwmPin, uint8_t dirPin, int8_t speed) {
 }
 
 /**
- * Differential drive control
- * turn: -100 (left) to +100 (right)
- * speed: 0-100 (forward)
+ * Smooth speed change with ramping
+ * Prevents sudden motor movements
  */
-void drive(int8_t turn, uint8_t speed) {
-    // Apply low power mode reduction
-    if (lowPowerMode) {
-        speed = speed * 0.6;
-    }
-    
-    // Differential steering
-    int8_t leftSpeed, rightSpeed;
+void driveRamped(int8_t turn, uint8_t speed) {
+    // Calculate target speeds
+    int8_t targetLeft, targetRight;
     
     if (turn == 0) {
-        // Straight
-        leftSpeed = speed;
-        rightSpeed = speed;
+        targetLeft = speed;
+        targetRight = speed;
     } else if (turn > 0) {
-        // Turn right - right motor slower
-        rightSpeed = speed - (int8_t)((speed * turn) / 100);
-        leftSpeed = speed;
+        targetRight = speed - (int8_t)((speed * turn) / 100);
+        targetLeft = speed;
     } else {
-        // Turn left - left motor slower
-        leftSpeed = speed + (int8_t)((speed * turn) / 100);  // turn is negative
-        rightSpeed = speed;
+        targetLeft = speed + (int8_t)((speed * turn) / 100);
+        targetRight = speed;
     }
     
-    // Clamp
-    leftSpeed = constrain(leftSpeed, -100, 100);
-    rightSpeed = constrain(rightSpeed, -100, 100);
+    // Clamp targets
+    targetLeft = constrain(targetLeft, -100, 100);
+    targetRight = constrain(targetRight, -100, 100);
     
-    // Drive all 4 motors (2 left, 2 right)
-    setMotor(MOTOR_A_PWM, MOTOR_A_DIR, leftSpeed);
-    setMotor(MOTOR_B_PWM, MOTOR_B_DIR, leftSpeed);
-    setMotor(MOTOR_C_PWM, MOTOR_C_DIR, rightSpeed);
-    setMotor(MOTOR_D_PWM, MOTOR_D_DIR, rightSpeed);
+    // Ramp towards target (smooth change)
+    if (currentLeftSpeed < targetLeft) currentLeftSpeed = min(targetLeft, currentLeftSpeed + SPEED_RAMP_RATE);
+    if (currentLeftSpeed > targetLeft) currentLeftSpeed = max(targetLeft, currentLeftSpeed - SPEED_RAMP_RATE);
+    if (currentRightSpeed < targetRight) currentRightSpeed = min(targetRight, currentRightSpeed + SPEED_RAMP_RATE);
+    if (currentRightSpeed > targetRight) currentRightSpeed = max(targetRight, currentRightSpeed - SPEED_RAMP_RATE);
+    
+    // Apply to motors
+    setMotor(MOTOR_A_PWM, MOTOR_A_DIR, currentLeftSpeed);
+    setMotor(MOTOR_B_PWM, MOTOR_B_DIR, currentLeftSpeed);
+    setMotor(MOTOR_C_PWM, MOTOR_C_DIR, currentRightSpeed);
+    setMotor(MOTOR_D_PWM, MOTOR_D_DIR, currentRightSpeed);
 }
 
 /**
- * Emergency stop - all motors off
+ * Emergency stop - all motors off with ramp reset
  */
 void estop() {
     estopTriggered = true;
+    // Reset ramp speeds for clean restart
+    currentLeftSpeed = 0;
+    currentRightSpeed = 0;
     digitalWrite(MOTOR_A_PWM, LOW);
     digitalWrite(MOTOR_B_PWM, LOW);
     digitalWrite(MOTOR_C_PWM, LOW);
@@ -748,6 +753,21 @@ void estop() {
     digitalWrite(MOTOR_B_DIR, LOW);
     digitalWrite(MOTOR_C_DIR, LOW);
     digitalWrite(MOTOR_D_DIR, LOW);
+}
+
+/**
+ * Differential drive control - uses ramping for smooth changes
+ * turn: -100 (left) to +100 (right)
+ * speed: 0-100 (forward)
+ */
+void drive(int8_t turn, uint8_t speed) {
+    // Apply low power mode reduction
+    if (lowPowerMode) {
+        speed = (uint8_t)((uint16_t)speed * 6 / 10);  // 60%
+    }
+    
+    // Use ramped version for smooth motor control
+    driveRamped(turn, speed);
 }
 
 // =============================================================================
@@ -950,8 +970,8 @@ void updateBattery() {
 // =============================================================================
 
 // State transition guards
-#define STATE_MIN_TIME_MS      500     // Minimum time in state
-#define ALERT_CONFIRM_TIME_MS  2000    // Confirm alert before taking action
+#define STATE_MIN_TIME_MS      500     // Minimum time in state (except first entry)
+#define ALERT_CONFIRM_TIME_MS 2000    // Confirm alert before taking action
 
 /**
  * Check transitions between states
@@ -963,7 +983,8 @@ void updateStateMachine() {
     uint32_t timeInState = currentTime - stateEntryTime;
     
     // Guard: Ignore transitions if in state < minimum time
-    if (timeInState < STATE_MIN_TIME_MS) {
+    // Exception: Allow transition TO first state without delay
+    if (timeInState < STATE_MIN_TIME_MS && currentState != previousState) {
         return;
     }
     
