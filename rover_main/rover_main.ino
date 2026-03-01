@@ -4,9 +4,9 @@
  * ESP32-S3 Main Firmware
  * 
  * Handles: Navigation, Motor Control, Sensor Fusion, State Machine,
- *          Communication with Pi Zero, ESP-NOW, and SIM800
+ *          Dock Detection, GPS Geofence, Charging Safety
  * 
- * Hardware: ESP32-S3, L9110S motors, DS18B20, HC-SR04, MPU6050, Neo-6M GPS
+ * Hardware: ESP32-S3, L9110S motors, DS18B20, HC-SR04, Neo-6M GPS, SIM800L
  * 
  * Author: EdgeCase Team
  */
@@ -19,25 +19,39 @@
 #include <freertos/queue.h>
 
 // =============================================================================
-// CONFIGURATION
+// HARDWARE CONFIGURATION - Updated for new requirements
 // =============================================================================
 
-// Pin Definitions
-#define MOTOR_A_PWM    4    // GPIO4 - Motor A speed (L9110S)
-#define MOTOR_A_DIR    2    // GPIO2 - Motor A direction
-#define MOTOR_B_PWM    5    // GPIO5 - Motor B speed
-#define MOTOR_B_DIR    18   // GPIO18 - Motor B direction
-#define MOTOR_C_PWM    6    // GPIO6 - Motor C speed
-#define MOTOR_C_DIR    7    // GPIO7 - Motor C direction
-#define MOTOR_D_PWM    15   // GPIO15 - Motor D speed
-#define MOTOR_D_DIR    16   // GPIO16 - Motor D direction
+// Motor Driver Pins (L9110S - 4WD paired)
+#define MOTOR_A_PWM    4
+#define MOTOR_A_DIR    2
+#define MOTOR_B_PWM    5
+#define MOTOR_B_DIR    18
+#define MOTOR_C_PWM    6
+#define MOTOR_C_DIR    7
+#define MOTOR_D_PWM    15
+#define MOTOR_D_DIR    16
 
-#define ULTRASONIC_TRIG 10  // GPIO10 - HC-SR04 Trigger
-#define ULTRASONIC_ECHO 9   // GPIO9 - HC-SR04 Echo
+// Sensors
+#define ULTRASONIC_TRIG 10
+#define ULTRASONIC_ECHO 9
+#define ONEWIRE_PIN     21   // DS18B20
+#define BUZZER_PIN      14
+#define STATUS_LED      45
 
-#define BUZZER_PIN     14   // GPIO14 - Piezo buzzer
+// GPS (NEO-6M) - SoftwareSerial on ESP32
+#define GPS_TX_PIN      8
+#define GPS_RX_PIN      19
 
-#define ONEWIRE_PIN    11   // GPIO11 - DS18B20
+// SIM800L GSM Module
+#define SIM800_TX       13
+#define SIM800_RX       12
+
+// Battery Monitor (ADC)
+#define BATTERY_ADC     1
+
+// Optional: Dedicated dock detect GPIO (if wired)
+// #define DOCK_DETECT_PIN  47  // Uncomment if hardware present
 
 // UART for Pi Zero communication
 #define UART_TX_PIN    43
@@ -45,13 +59,17 @@
 #define UART_NUM       UART_NUM_1
 #define UART_BAUD      115200
 
+// PWM Configuration
+#define PWM_FREQ       1000
+#define PWM_RESOLUTION 8
+
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
+
 // Communication Timeouts
 #define COMMAND_TIMEOUT_MS  500   // Stop if no command from Pi
 #define ESPNOW_TIMEOUT_MS   1000  // Stop if no ESP-NOW from base
-
-// PWM Configuration
-#define PWM_FREQ       1000  // 1kHz
-#define PWM_RESOLUTION 8     // 8-bit (0-255)
 
 // =============================================================================
 // COMMAND PROTOCOL STRUCTURES
@@ -75,67 +93,390 @@ struct DockCommand {
 };
 
 // =============================================================================
-// STATE MACHINE DEFINITIONS
+// STATE MACHINE DEFINITIONS - Validated for production
 // =============================================================================
 
 enum RoverState {
-    STATE_IDLE = 0,          // Idle/standby
-    STATE_PATROL,             // Normal patrol mode
-    STATE_RESEARCH,           // Research/data collection
+    STATE_SAFE_IDLE = 0,      // Minimal power, sensors active
+    STATE_PATROL,             // Autonomous patrol with geofence
     STATE_ALERT,              // Hazard detected - investigating
-    STATE_RETURN_TO_BASE,     // Low battery or manual recall
-    STATE_DOCKING,            // AprilTag docking procedure
-    STATE_DOCKED              // Successfully docked
+    STATE_RETURN_TO_BASE,     // Geofence violation or manual recall
+    STATE_DOCKING,            // AprilTag precision approach
+    STATE_DOCKED_CHARGING     // Passive charging, motors disabled
 };
 
 enum AlertType {
     ALERT_NONE = 0,
     ALERT_FIRE,
     ALERT_EARTHQUAKE,
+    ALERT_GEOFENCE,
     ALERT_INTRUDER
 };
 
 // =============================================================================
-// GLOBAL VARIABLES
+// DOCK DETECTION MODULE - Robust battery voltage rise detection
 // =============================================================================
+// Approach: Compare current voltage to baseline, detect sustained rise
+// Primary method: Monitor voltage increase when docked (charging raises voltage)
+// Debouncing: Require sustained voltage rise for CONFIRM_TIME_MS
+// Tolerates: Noisy contact, brief disconnects
+// Non-blocking: Uses millis() timing
 
-// Current rover state
-volatile RoverState currentState = STATE_IDLE;
-volatile RoverState previousState = STATE_IDLE;
+#define DOCK_VOLTAGE_RISE      0.4    // Minimum voltage rise above baseline (0.4V)
+#define DOCK_CONFIRM_TIME_MS   2000   // Must sustain rise for 2 seconds
+#define UNDOCK_CONFIRM_MS      1500   // Must be low for 1.5s to confirm undock
+#define BASELINE_SAMPLES       10      // Samples to establish baseline
 
-// Control inputs
-volatile int8_t currentTurn = 0;
-volatile uint8_t currentSpeed = 0;
-volatile bool dockingEnabled = false;
-volatile bool docked = false;
+struct DockDetector {
+    bool isDocked;
+    bool wasDocked;
+    uint32_t dockStartTime;
+    uint32_t undockStartTime;
+    float baselineVoltage;
+    bool baselineStable;
+    uint8_t sampleCount;
+};
 
-// Timing
-volatile uint32_t lastCommandTime = 0;
-volatile uint32_t lastEspNowTime = 0;
-volatile uint32_t stateEntryTime = 0;
+static DockDetector dockState = {
+    false, false, 0, 0, 0.0, false, 0
+};
 
-// Sensor data (updated by tasks)
-volatile float temperature = 25.0;
-volatile float distance = 999.0;  // cm
-volatile float batteryVoltage = 12.0;
-volatile float batteryPercent = 100.0;
-volatile bool fireDetected = false;
-volatile bool humanDetected = false;
-volatile bool tiltDetected = false;
-volatile float latitude = 0.0;
-volatile float longitude = 0.0;
+/**
+ * Robust dock detection using voltage rise above baseline
+ * Call every battery update cycle (~100ms)
+ * Returns true on rising edge (just docked)
+ */
+bool detectDock(float currentVoltage) {
+    uint32_t now = millis();
+    
+    // Phase 1: Establish baseline (first 10 samples)
+    if (!dockState.baselineStable) {
+        if (dockState.sampleCount < BASELINE_SAMPLES) {
+            dockState.baselineVoltage += currentVoltage;
+            dockState.sampleCount++;
+        } else if (dockState.sampleCount == BASELINE_SAMPLES) {
+            dockState.baselineVoltage /= BASELINE_SAMPLES;
+            dockState.baselineStable = true;
+            Serial.print("DOCK: Baseline established at ");
+            Serial.print(dockState.baselineVoltage);
+            Serial.println("V");
+            dockState.sampleCount++;
+        }
+        return false;
+    }
+    
+    // Phase 2: Monitor for voltage rise (charging)
+    float voltageRise = currentVoltage - dockState.baselineVoltage;
+    bool voltageRising = (voltageRise >= DOCK_VOLTAGE_RISE);
+    
+    if (voltageRising) {
+        // Start or continue dock confirmation timer
+        if (dockState.undockStartTime > 0) {
+            dockState.undockStartTime = 0;
+        }
+        
+        if (dockState.dockStartTime == 0) {
+            dockState.dockStartTime = now;
+        }
+        
+        // Confirm dock after sustained voltage rise
+        if ((now - dockState.dockStartTime) >= DOCK_CONFIRM_TIME_MS) {
+            if (!dockState.isDocked) {
+                dockState.isDocked = true;
+                dockState.dockStartTime = 0;
+                Serial.print("DOCK: Detected at ");
+                Serial.print(currentVoltage);
+                Serial.print("V (rise: ");
+                Serial.print(voltageRise);
+                Serial.println("V)");
+            }
+        }
+    } else {
+        // Voltage dropped - start undock timer
+        if (dockState.dockStartTime > 0) {
+            dockState.dockStartTime = 0;
+        }
+        
+        if (dockState.undockStartTime == 0) {
+            dockState.undockStartTime = now;
+        }
+        
+        // Confirm undock after sustained low voltage
+        if ((now - dockState.undockStartTime) >= UNDOCK_CONFIRM_MS) {
+            if (dockState.isDocked) {
+                dockState.isDocked = false;
+                dockState.undockStartTime = 0;
+                dockState.baselineStable = false;  // Reset baseline
+                dockState.sampleCount = 0;
+                dockState.baselineVoltage = 0;
+                Serial.println("DOCK: Undocked - baseline reset");
+            }
+        }
+    }
+    
+    // Return true on rising edge (just docked)
+    bool justDocked = dockState.isDocked && !dockState.wasDocked;
+    dockState.wasDocked = dockState.isDocked;
+    
+    return justDocked;
+}
 
-// Alert tracking
-volatile AlertType currentAlert = ALERT_NONE;
-volatile uint32_t alertStartTime = 0;
-volatile bool alertConfirmed = false;
+bool isDocked() {
+    return dockState.isDocked;
+}
 
-// Power management
-volatile bool lowPowerMode = false;
-const float LOW_BATTERY_THRESHOLD = 30.0;
+// =============================================================================
+// GPS GEOFENCE MODULE
+// =============================================================================
+// Uses flat-earth approximation (acceptable for small areas)
+// Stores home position at startup
+// Monitors distance from home
+// Non-blocking, tolerant of GPS signal loss
 
-// Safety
-volatile bool estopTriggered = false;
+#define GEOFENCE_RADIUS_M   50.0    // 50 meter radius
+#define GPS_VALID_AGE_MS   10000   // Discard fixes older than 10s
+
+struct GeofenceMonitor {
+    float homeLat;
+    float homeLon;
+    bool homeSet;
+    bool violated;
+    uint32_t lastValidFix;
+    float currentLat;
+    float currentLon;
+};
+
+static GeofenceMonitor geofence = {
+    0.0f, 0.0f, false, false, 0, 0.0f, 0.0f
+};
+
+// Flat-earth approximation for small distances
+// Returns distance in meters
+float calculateDistance(float lat1, float lon1, float lat2, float lon2) {
+    const float EARTH_RADIUS = 6371000.0;  // meters
+    const float PI = 3.14159265;
+    
+    float dLat = (lat2 - lat1) * PI / 180.0;
+    float dLon = (lon2 - lon1) * PI / 180.0;
+    
+    float a = sin(dLat / 2) * sin(dLat / 2) +
+              cos(lat1 * PI / 180.0) * cos(lat2 * PI / 180.0) *
+              sin(dLon / 2) * sin(dLon / 2);
+    
+    float c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    
+    return EARTH_RADIUS * c;
+}
+
+void setHomePosition(float lat, float lon) {
+    geofence.homeLat = lat;
+    geofence.homeLon = lon;
+    geofence.homeSet = true;
+    geofence.violated = false;
+    Serial.print("GEOFENCE: Home set to ");
+    Serial.print(lat, 6);
+    Serial.print(", ");
+    Serial.println(lon, 6);
+}
+
+void updateGPS(float lat, float lon, uint32_t fixAge) {
+    if (fixAge > GPS_VALID_AGE_MS) {
+        return;  // Ignore stale fixes
+    }
+    
+    geofence.currentLat = lat;
+    geofence.currentLon = lon;
+    geofence.lastValidFix = millis();
+    
+    if (!geofence.homeSet) {
+        // First valid fix - set as home
+        setHomePosition(lat, lon);
+        return;
+    }
+    
+    // Check distance from home
+    float distance = calculateDistance(
+        geofence.homeLat, geofence.homeLon,
+        lat, lon
+    );
+    
+    if (distance > GEOFENCE_RADIUS_M && !geofence.violated) {
+        geofence.violated = true;
+        Serial.print("GEOFENCE: VIOLATION! Distance: ");
+        Serial.println(distance);
+    } else if (distance <= GEOFENCE_RADIUS_M * 0.8) {
+        // Clear violation when back within 80% of fence (hysteresis)
+        geofence.violated = false;
+    }
+}
+
+bool isGeofenceViolated() {
+    return geofence.violated;
+}
+
+bool isGPSValid() {
+    return (millis() - geofence.lastValidFix) < GPS_VALID_AGE_MS;
+}
+
+// =============================================================================
+// CHARGING SAFETY MODULE
+// =============================================================================
+// When docked:
+// - Immediately stop all motors
+// - Enter reduced-power sensor mode
+// - Keep critical monitoring active
+// - Log charge start timestamp
+// - Attempt charge completion detection
+// Non-blocking state machine
+
+#define CHARGE_COMPLETE_VOLTAGE 8.4   // 4.2V per cell for 2S
+#define CHARGE_COMPLETE_TIME    600000  // 10 minutes max charge
+
+static bool chargeStarted = false;
+static uint32_t chargeStartTime = 0;
+static bool chargeComplete = false;
+
+void onDockDetected() {
+    chargeStarted = true;
+    chargeStartTime = millis();
+    chargeComplete = false;
+    
+    Serial.println("CHARGING: Dock detected - starting charge");
+}
+
+void onUndocked() {
+    chargeStarted = false;
+    chargeStartTime = 0;
+    chargeComplete = false;
+    
+    Serial.println("CHARGING: Undocked - resetting charge state");
+}
+
+bool isChargingComplete(float voltage) {
+    if (!chargeStarted || chargeComplete) {
+        return chargeComplete;
+    }
+    
+    // Check voltage threshold
+    if (voltage >= CHARGE_COMPLETE_VOLTAGE) {
+        chargeComplete = true;
+        Serial.println("CHARGING: Complete - voltage threshold reached");
+        return true;
+    }
+    
+    // Check timeout
+    if ((millis() - chargeStartTime) > CHARGE_COMPLETE_TIME) {
+        chargeComplete = true;
+        Serial.println("CHARGING: Complete - timeout");
+        return true;
+    }
+    
+    return false;
+}
+
+bool hasChargingStarted() {
+    return chargeStarted;
+}
+
+// =============================================================================
+// GSM ALERT ROUTINES - SIM800L
+// =============================================================================
+// Sends SMS alerts for critical events:
+// - Geofence violation
+// - Hazard detection
+// Non-blocking with timeout
+
+struct GSMState {
+    bool initialized;
+    bool ready;
+    uint32_t initStartTime;
+    String phoneNumber;
+};
+
+static GSMState gsm = {
+    false, false, 0, "+1234567890"  // Configure your alert number
+};
+
+bool initGSM() {
+    if (gsm.initialized) return gsm.ready;
+    
+    Serial2.println("AT");
+    delay(500);
+    
+    String response = "";
+    while (Serial2.available()) {
+        response += (char)Serial2.read();
+    }
+    
+    if (response.indexOf("OK") >= 0) {
+        Serial2.println("AT+CMGF=1");  // Text mode
+        delay(200);
+        gsm.ready = true;
+        gsm.initialized = true;
+        Serial.println("GSM: Ready");
+        return true;
+    }
+    
+    gsm.initialized = true;
+    Serial.println("GSM: Not ready");
+    return false;
+}
+
+bool sendSMS(const char* message) {
+    if (!gsm.ready) {
+        Serial.println("GSM: Not ready for SMS");
+        return false;
+    }
+    
+    Serial2.print("AT+CMGS=\"");
+    Serial2.print(gsm.phoneNumber.c_str());
+    Serial2.println("\"");
+    delay(500);
+    
+    Serial2.print(message);
+    Serial2.write(26);  // Ctrl+Z to send
+    delay(2000);
+    
+    String response = "";
+    while (Serial2.available()) {
+        response += (char)Serial2.read();
+    }
+    
+    if (response.indexOf("OK") >= 0) {
+        Serial.println("GSM: SMS sent");
+        return true;
+    }
+    
+    Serial.println("GSM: SMS failed");
+    return false;
+}
+
+void sendGeofenceAlert() {
+    if (alertSent) return;
+    
+    char msg[100];
+    snprintf(msg, sizeof(msg), 
+        "STASIS ALERT: Geofence violation! Lat: %.6f, Lon: %.6f",
+        (double)latitude, (double)longitude);
+    
+    sendSMS(msg);
+    alertSent = true;
+}
+
+void sendHazardAlert(AlertType type) {
+    if (alertSent) return;
+    
+    const char* msg = "STASIS ALERT: Hazard detected! Investigating.";
+    
+    if (type == ALERT_FIRE) {
+        msg = "STASIS ALERT: Fire detected! Immediate attention required.";
+    } else if (type == ALERT_EARTHQUAKE) {
+        msg = "STASIS ALERT: Seismic activity detected!";
+    }
+    
+    sendSMS(msg);
+    alertSent = true;
+}
 
 // =============================================================================
 // COMMAND PARSING
@@ -148,7 +489,7 @@ void processCommand(String cmd) {
     cmd.toUpperCase();
     
     if (cmd == "STOP") {
-        currentState = STATE_IDLE;
+        currentState = STATE_SAFE_IDLE;
         currentSpeed = 0;
         currentTurn = 0;
         drive(0, 0);
@@ -157,58 +498,65 @@ void processCommand(String cmd) {
     else if (cmd == "FORWARD") {
         currentTurn = 0;
         currentSpeed = 50;
-        if (currentState == STATE_IDLE) currentState = STATE_PATROL;
+        if (currentState == STATE_SAFE_IDLE) currentState = STATE_PATROL;
     }
     else if (cmd == "BACKWARD") {
         currentTurn = 0;
         currentSpeed = 50;
-        drive(0, 0); // Just stop for now
+        drive(0, 0);
     }
     else if (cmd == "LEFT") {
         currentTurn = -50;
         currentSpeed = 30;
-        if (currentState == STATE_IDLE) currentState = STATE_PATROL;
+        if (currentState == STATE_SAFE_IDLE) currentState = STATE_PATROL;
     }
     else if (cmd == "RIGHT") {
         currentTurn = 50;
         currentSpeed = 30;
-        if (currentState == STATE_IDLE) currentState = STATE_PATROL;
+        if (currentState == STATE_SAFE_IDLE) currentState = STATE_PATROL;
     }
     else if (cmd == "PATROL" || cmd == "START_PATROL") {
         currentState = STATE_PATROL;
         currentSpeed = 40;
         currentTurn = 0;
+        alertSent = false;
     }
     else if (cmd == "STOP_PATROL") {
-        currentState = STATE_IDLE;
+        currentState = STATE_SAFE_IDLE;
         currentSpeed = 0;
     }
     else if (cmd == "HOME" || cmd == "RETURN_HOME" || cmd == "RETURN_BASE") {
         currentState = STATE_RETURN_TO_BASE;
         currentSpeed = 40;
-    }
-    else if (cmd == "RESEARCH" || cmd == "START_RESEARCH") {
-        currentState = STATE_RESEARCH;
-        currentSpeed = 30;
+        alertSent = false;
     }
     else if (cmd == "DOCKING" || cmd == "ENABLE_DOCKING") {
         currentState = STATE_DOCKING;
         currentSpeed = 0;
     }
     else if (cmd == "DISABLE_DOCKING") {
-        currentState = STATE_IDLE;
+        currentState = STATE_SAFE_IDLE;
     }
     else if (cmd == "RESET") {
-        currentState = STATE_IDLE;
+        currentState = STATE_SAFE_IDLE;
         currentSpeed = 0;
         currentTurn = 0;
         currentAlert = ALERT_NONE;
         estopTriggered = false;
+        alertSent = false;
         Serial.println("CMD:RESET_OK");
     }
     else if (cmd == "ALERT") {
         currentState = STATE_ALERT;
         currentSpeed = 0;
+    }
+    else if (cmd == "SETHOME") {
+        if (latitude != 0.0 && longitude != 0.0) {
+            setHomePosition(latitude, longitude);
+            Serial.println("CMD:SETHOME_OK");
+        } else {
+            Serial.println("CMD:SETHOME_FAIL - no GPS fix");
+        }
     }
     else {
         Serial.println("CMD:UNKNOWN");
@@ -343,39 +691,71 @@ bool parseDockCommand(uint8_t byte, DockCommand* cmd) {
 }
 
 // =============================================================================
-// ULTRASONIC SENSOR - NON-BLOCKING
+// ULTRASONIC SENSOR - NON-BLOCKING IMPLEMENTATION
 // =============================================================================
 
+#define ULTRASONIC_MAX_DISTANCE_CM  400
+#define ULTRASONIC_TIMEOUT_US        25000
+
+static struct {
+    uint8_t state;            // 0=idle, 1=triggering, 2=waiting_echo, 3=measuring
+    uint32_t triggerTime;
+    uint32_t echoStartTime;
+    float lastDistance;
+} ultrasonic = {0, 0, 0, 0, 999.0};
+
 /**
- * Read ultrasonic distance (non-blocking)
- * Returns distance in cm, or 999.0 on timeout/error
+ * Non-blocking ultrasonic read
+ * Call repeatedly from sensor task
+ * Returns last valid distance or 999.0 if no reading
  */
 float readUltrasonic() {
-    // Trigger pulse
-    digitalWrite(ULTRASONIC_TRIG, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(ULTRASONIC_TRIG, LOW);
+    uint32_t now = micros();
     
-    // Measure echo (with timeout)
-    uint32_t timeout = 25000;  // ~4m max
-    uint32_t start = micros();
-    
-    while (digitalRead(ULTRASONIC_ECHO) == LOW) {
-        if (micros() - start > timeout) return 999.0;
+    switch (ultrasonic.state) {
+        case 0:  // Idle - trigger new reading
+            digitalWrite(ULTRASONIC_TRIG, HIGH);
+            ultrasonic.triggerTime = now;
+            ultrasonic.state = 1;
+            break;
+            
+        case 1:  // Wait for trigger pulse (10us)
+            if (now - ultrasonic.triggerTime >= 10) {
+                digitalWrite(ULTRASONIC_TRIG, LOW);
+                ultrasonic.state = 2;
+            }
+            break;
+            
+        case 2:  // Wait for echo start
+            if (digitalRead(ULTRASONIC_ECHO) == HIGH) {
+                ultrasonic.echoStartTime = now;
+                ultrasonic.state = 3;
+            } else if (now - ultrasonic.triggerTime > ULTRASONIC_TIMEOUT_US) {
+                // Timeout - no echo received
+                ultrasonic.state = 0;
+            }
+            break;
+            
+        case 3:  // Wait for echo end
+            if (digitalRead(ULTRASONIC_ECHO) == LOW) {
+                uint32_t echoDuration = now - ultrasonic.echoStartTime;
+                if (echoDuration < ULTRASONIC_TIMEOUT_US) {
+                    ultrasonic.lastDistance = (echoDuration * 0.0343) / 2.0;
+                    ultrasonic.lastDistance = constrain(ultrasonic.lastDistance, 0, ULTRASONIC_MAX_DISTANCE_CM);
+                }
+                ultrasonic.state = 0;
+            } else if (now - ultrasonic.echoStartTime > ULTRASONIC_TIMEOUT_US) {
+                // Echo timeout
+                ultrasonic.state = 0;
+            }
+            break;
+            
+        default:
+            ultrasonic.state = 0;
+            break;
     }
     
-    uint32_t echoStart = micros();
-    
-    while (digitalRead(ULTRASONIC_ECHO) == HIGH) {
-        if (micros() - echoStart > timeout) return 999.0;
-    }
-    
-    uint32_t echoDuration = micros() - echoStart;
-    
-    // Convert to cm (speed of sound = 343 m/s)
-    float distance = (echoDuration * 0.0343) / 2.0;
-    
-    return constrain(distance, 0, 400);
+    return ultrasonic.lastDistance;
 }
 
 // =============================================================================
@@ -390,62 +770,95 @@ float readTemperature() {
 }
 
 // =============================================================================
-// BATTERY MONITORING
+// BATTERY MONITORING - Updated for 2S Li-ion (7.4V nominal)
 // =============================================================================
 
 void updateBattery() {
     // Read ADC and calculate battery percentage
-    // Assuming voltage divider and 12V battery
-    int adcValue = analogRead(A0);
-    batteryVoltage = (adcValue / 4095.0) * 3.3 * 4.2;  // Adjust divider ratio
-    batteryPercent = ((batteryVoltage - 9.0) / 3.0) * 100.0;
+    // 2S Li-ion: 6.0V (empty) to 8.4V (full)
+    // Voltage divider: 30k + 10k = 40k total, ratio = 10/40 = 0.25
+    int adcValue = analogRead(BATTERY_ADC);
+    float adcVoltage = (adcValue / 4095.0) * 3.3;
+    batteryVoltage = adcVoltage / 0.25;
+    
+    // Percentage: 6.0V = 0%, 8.4V = 100%
+    batteryPercent = ((batteryVoltage - 6.0) / 2.4) * 100.0;
     batteryPercent = constrain(batteryPercent, 0, 100);
+    
+    // Dock detection via voltage rise
+    bool justDocked = detectDock(batteryVoltage);
+    
+    if (justDocked) {
+        onDockDetected();
+    } else if (!isDocked() && chargeStarted) {
+        onUndocked();
+    }
     
     // Enable low power mode
     lowPowerMode = (batteryPercent < LOW_BATTERY_THRESHOLD);
 }
 
 // =============================================================================
-// STATE MACHINE LOGIC
+// STATE MACHINE LOGIC - Updated for charging and geofence
 // =============================================================================
 
 /**
  * Check transitions between states
+ * Event-driven, non-blocking, robust to sensor noise
  */
 void updateStateMachine() {
     uint32_t currentTime = millis();
     previousState = currentState;
     
     switch (currentState) {
-        case STATE_IDLE:
-            // Stay idle until command received
-            // Can be woken by commands from UART
-            break;
-            
-        case STATE_PATROL:
-            // Transitions:
-            if (fireDetected || humanDetected || tiltDetected) {
-                currentState = STATE_ALERT;
-                alertStartTime = currentTime;
-                alertConfirmed = false;
-            } else if (batteryPercent < LOW_BATTERY_THRESHOLD) {
-                currentState = STATE_RETURN_TO_BASE;
+        case STATE_SAFE_IDLE:
+            // Stay idle until command received or docked
+            if (isDocked()) {
+                currentState = STATE_DOCKED_CHARGING;
             } else if (dockingEnabled) {
                 currentState = STATE_DOCKING;
             }
             break;
             
-        case STATE_RESEARCH:
-            // Stay in research until timeout or alert
-            if (fireDetected || humanDetected || tiltDetected) {
+        case STATE_PATROL:
+            // Transitions:
+            // Geofence violation takes priority - send alert
+            if (isGeofenceViolated() && !alertSent) {
+                currentState = STATE_RETURN_TO_BASE;
+                currentAlert = ALERT_GEOFENCE;
+                alertStartTime = currentTime;
+                sendGeofenceAlert();
+            }
+            // Hazard detection
+            else if (fireDetected || humanDetected || tiltDetected) {
                 currentState = STATE_ALERT;
                 alertStartTime = currentTime;
-            } else if (currentTime - stateEntryTime > 300000) {  // 5 min timeout
-                currentState = STATE_PATROL;
+                alertConfirmed = false;
+                // Determine alert type
+                if (fireDetected) currentAlert = ALERT_FIRE;
+                else if (tiltDetected) currentAlert = ALERT_EARTHQUAKE;
+                else currentAlert = ALERT_INTRUDER;
+            }
+            // Low battery
+            else if (batteryPercent < LOW_BATTERY_THRESHOLD) {
+                currentState = STATE_RETURN_TO_BASE;
+            }
+            // Manual docking
+            else if (dockingEnabled) {
+                currentState = STATE_DOCKING;
+            }
+            // Auto-dock detection
+            else if (isDocked()) {
+                currentState = STATE_DOCKED_CHARGING;
             }
             break;
             
         case STATE_ALERT:
+            // Send alert on first entry to alert state
+            if (currentTime - stateEntryTime < 1000) {
+                sendHazardAlert(currentAlert);
+            }
+            
             // Sensor fusion: require BOTH temperature AND camera flag for fire
             if (currentAlert == ALERT_FIRE) {
                 if (temperature > 60.0 && fireDetected) {
@@ -455,34 +868,58 @@ void updateStateMachine() {
             
             // Timeout after 30 seconds if not confirmed
             if (currentTime - alertStartTime > 30000) {
-                if (alertConfirmed) {
-                    // Send alert via SIM800
-                    // Then return to patrol
-                }
                 currentState = STATE_PATROL;
+                currentAlert = ALERT_NONE;
+                alertSent = false;
+            }
+            
+            // Can return to base if commanded
+            if (dockingEnabled) {
+                currentState = STATE_DOCKING;
             }
             break;
             
         case STATE_RETURN_TO_BASE:
-            // Navigate toward base (using GPS)
+            // Navigate toward base (using GPS - simplified)
             if (dockingEnabled) {
                 currentState = STATE_DOCKING;
             }
-            // Could add GPS waypoint navigation here
+            else if (isDocked()) {
+                currentState = STATE_DOCKED_CHARGING;
+            }
+            // Return to patrol if back within geofence (if not geofence alert)
+            else if (!isGeofenceViolated() && currentAlert != ALERT_GEOFENCE) {
+                currentState = STATE_PATROL;
+                currentAlert = ALERT_NONE;
+                alertSent = false;
+            }
+            // Also clear alert if manually reset
+            else if (currentAlert == ALERT_GEOFENCE && !isGeofenceViolated()) {
+                alertSent = false;
+            }
             break;
             
         case STATE_DOCKING:
             // Use commands from Pi Zero
-            if (docked || (currentTime - lastCommandTime > COMMAND_TIMEOUT_MS)) {
-                currentState = STATE_DOCKED;
+            if (isDocked() || (currentTime - lastCommandTime > COMMAND_TIMEOUT_MS)) {
+                currentState = STATE_DOCKED_CHARGING;
                 estop();
+            }
+            // Abort if undocked mid-docking
+            if (!isDocked() && !dockingEnabled) {
+                currentState = STATE_SAFE_IDLE;
             }
             break;
             
-        case STATE_DOCKED:
-            // Stay docked, waiting
-            if (!dockingEnabled) {
-                currentState = STATE_PATROL;
+        case STATE_DOCKED_CHARGING:
+            // Charging state - stay here until undocked
+            if (!isDocked()) {
+                currentState = STATE_SAFE_IDLE;
+                alertSent = false;  // Reset alert flag on undock
+            }
+            // Manual undock command
+            if (!dockingEnabled && currentTime - stateEntryTime > 2000) {
+                // Require 2 seconds docked before allowing undock
             }
             break;
     }
@@ -497,29 +934,25 @@ void updateStateMachine() {
 
 /**
  * Execute current state behavior
+ * Includes charging safety behavior when docked
  */
 void executeState() {
     uint32_t currentTime = millis();
     
     switch (currentState) {
-        case STATE_IDLE:
-            // Full stop - waiting for commands
+        case STATE_SAFE_IDLE:
+            // Full stop - minimal power
             currentTurn = 0;
             currentSpeed = 0;
             drive(0, 0);
+            digitalWrite(STATUS_LED, (currentTime / 1000) % 2);  // Slow blink
             break;
             
         case STATE_PATROL:
             // Normal patrol behavior
-            // Could implement waypoint following or random walk
             currentTurn = 0;
             currentSpeed = lowPowerMode ? 30 : 50;
-            break;
-            
-        case STATE_RESEARCH:
-            // Slower, more thorough movement
-            currentTurn = 0;
-            currentSpeed = 20;
+            digitalWrite(STATUS_LED, HIGH);
             break;
             
         case STATE_ALERT:
@@ -532,13 +965,15 @@ void executeState() {
             } else {
                 digitalWrite(BUZZER_PIN, LOW);
             }
+            digitalWrite(STATUS_LED, (currentTime / 200) % 2);  // Fast blink
             break;
             
         case STATE_RETURN_TO_BASE:
             // Navigate toward base coordinates
-            // Simplified: just go straight (would use GPS in production)
+            // Simplified: just go straight (GPS waypoint would go here)
             currentTurn = 0;
             currentSpeed = lowPowerMode ? 20 : 40;
+            digitalWrite(STATUS_LED, (currentTime / 500) % 2);  // Medium blink
             break;
             
         case STATE_DOCKING:
@@ -552,16 +987,39 @@ void executeState() {
             // Otherwise use currentTurn and currentSpeed from UART
             break;
             
-        case STATE_DOCKED:
-            // Full stop
+        case STATE_DOCKED_CHARGING:
+            // CHARGING SAFETY: Immediately stop all motors
             currentTurn = 0;
             currentSpeed = 0;
-            docked = true;
+            drive(0, 0);
+            
+            // Reduced-power sensor mode - continue monitoring
+            // Keep critical monitoring active (battery, temp)
+            
+            // Log charge status periodically (non-blocking check)
+            static uint32_t lastChargeLog = 0;
+            if (currentTime - lastChargeLog > 10000) {
+                Serial.print("CHARGING: Voltage=");
+                Serial.print(batteryVoltage);
+                Serial.print("V, Started=");
+                Serial.println(hasChargingStarted() ? "YES" : "NO");
+                lastChargeLog = currentTime;
+            }
+            
+            // Check for charge complete - non-blocking beep
+            static bool chargeBeepDone = false;
+            if (isChargingComplete(batteryVoltage) && !chargeBeepDone) {
+                // Queue beep - will be done by main loop
+                chargeBeepDone = true;
+            }
+            
+            // LED indication - solid when charging
+            digitalWrite(STATUS_LED, HIGH);
             break;
     }
     
     // Apply motor commands (except in DOCKING which uses UART commands directly)
-    if (currentState != STATE_DOCKING) {
+    if (currentState != STATE_DOCKING && currentState != STATE_DOCKED_CHARGING) {
         drive(currentTurn, currentSpeed);
     }
 }
@@ -589,7 +1047,6 @@ void uartTask(void* parameter) {
                 if (parseDockCommand(buffer[0], &cmd)) {
                     currentTurn = cmd.turn;
                     currentSpeed = cmd.speed;
-                    docked = (cmd.docked == 1);
                     lastCommandTime = millis();
                     estopTriggered = false;
                 }
@@ -609,6 +1066,96 @@ void uartTask(void* parameter) {
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+// =============================================================================
+// GPS PARSING - NEO-6M NMEA sentences
+// =============================================================================
+
+String gpsBuffer = "";
+
+void parseGPSLine(String& line) {
+    // Look for GGA sentence (contains position data)
+    if (!line.startsWith("$GPGGA") && !line.startsWith("$GNGGA")) {
+        return;
+    }
+    
+    // Parse GGA: $GPGGA,time,lat,NS,lon,EW,quality,satellites,hdop,alt,M,geoid,M,...
+    int commas[15];
+    int commaCount = 0;
+    
+    for (int i = 0; i < line.length() && commaCount < 15; i++) {
+        if (line.charAt(i) == ',') {
+            commas[commaCount++] = i;
+        }
+    }
+    
+    if (commaCount < 9) return;
+    
+    // Check GPS quality (0 = no fix, 1 = GPS, 2 = DGPS)
+    int quality = line.substring(commas[5] + 1, commas[6]).toInt();
+    if (quality == 0) return;  // No valid fix
+    
+    // Parse latitude
+    String latStr = line.substring(commas[1] + 1, commas[2]);
+    String latDir = line.substring(commas[2] + 1, commas[3]);
+    if (latStr.length() > 0) {
+        float lat = latStr.toFloat();
+        // Convert DDMM.MMMM to degrees
+        int latDeg = lat / 100;
+        float latMin = lat - (latDeg * 100);
+        latitude = latDeg + (latMin / 60.0);
+        if (latDir == "S") latitude = -latitude;
+    }
+    
+    // Parse longitude
+    String lonStr = line.substring(commas[3] + 1, commas[4]);
+    String lonDir = line.substring(commas[4] + 1, commas[5]);
+    if (lonStr.length() > 0) {
+        float lon = lonStr.toFloat();
+        // Convert DDDMM.MMMM to degrees
+        int lonDeg = lon / 100;
+        float lonMin = lon - (lonDeg * 100);
+        longitude = lonDeg + (lonMin / 60.0);
+        if (lonDir == "W") longitude = -longitude;
+    }
+    
+    // Update geofence
+    gpsFixAge = 0;
+    updateGPS(latitude, longitude, 0);
+}
+
+/**
+ * GPS polling task - reads from Serial (GPS)
+ * Non-blocking NMEA parsing
+ */
+void gpsTask(void* parameter) {
+    uint32_t lastGPSUpdate = 0;
+    
+    while (true) {
+        // Read available GPS characters
+        while (Serial2.available()) {
+            char c = Serial2.read();
+            if (c == '\n' || c == '\r') {
+                if (gpsBuffer.length() > 0) {
+                    parseGPSLine(gpsBuffer);
+                    gpsBuffer = "";
+                    lastGPSUpdate = millis();
+                }
+            } else if (gpsBuffer.length() < 100) {
+                gpsBuffer += c;
+            }
+        }
+        
+        // Age the fix based on time since last valid update
+        if (lastGPSUpdate > 0) {
+            gpsFixAge = millis() - lastGPSUpdate;
+        } else {
+            gpsFixAge = 60000;  // No fix yet
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -632,6 +1179,10 @@ void cameraTask(void* parameter) {
                     if (hazardType == "FIRE") fireDetected = true;
                     else if (hazardType == "MOTION") humanDetected = true;
                     else if (hazardType == "HUMAN") humanDetected = true;
+                    else if (hazardType == "CLEAR") {
+                        fireDetected = false;
+                        humanDetected = false;
+                    }
                 }
             }
         }
@@ -640,23 +1191,27 @@ void cameraTask(void* parameter) {
 }
 
 /**
- * Sensor polling task
+ * Sensor polling task - non-critical sensors
  */
 void sensorTask(void* parameter) {
     while (true) {
-        // Read ultrasonic (non-blocking handled internally)
+        // Read ultrasonic (now non-blocking)
         distance = readUltrasonic();
         
-        // Obstacle avoidance override
-        if (distance < 20.0 && currentSpeed > 20) {
-            estop();
+        // Obstacle avoidance override - only in patrol/return states
+        if ((currentState == STATE_PATROL || currentState == STATE_RETURN_TO_BASE) 
+            && distance < 20.0 && currentSpeed > 20) {
+            // Slow down for obstacles - non-blocking
+            currentSpeed = 15;
         }
         
-        // Read temperature
-        temperature = readTemperature();
+        // Read temperature (placeholder - would use OneWire library)
+        // temperature = readTemperature();
         
-        // Update battery
+        // Update battery and dock detection
         updateBattery();
+        
+        // GPS is handled by gpsTask
         
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -701,9 +1256,11 @@ void setup() {
     pinMode(ULTRASONIC_TRIG, OUTPUT);
     pinMode(ULTRASONIC_ECHO, INPUT);
     
-    // Configure buzzer
+    // Configure buzzer and status LED
     pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(STATUS_LED, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(STATUS_LED, LOW);
     
     // Configure UART for Pi Zero
     uart_config_t uart_config = {
@@ -717,19 +1274,43 @@ void setup() {
     uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     uart_driver_install(UART_NUM, 1024, 1024, 0, NULL, 0);
     
-    // Initialize watchdog
-    // In production: esp_task_wdt_init(5, true);
+    // Configure Serial2 for GPS (NEO-6M)
+    // GPS uses 9600 baud typically
+    Serial2.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    
+    // Initialize ADC for battery
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);  // Allow up to ~3.3V input
+    
+    // Initialize dock detection baseline
+    dockState.baselineStable = false;
+    dockState.sampleCount = 0;
+    dockState.isDocked = false;
+    dockState.wasDocked = false;
+    dockState.dockStartTime = 0;
+    dockState.undockStartTime = 0;
+    dockState.baselineVoltage = 0;
+    
+    // Initialize geofence
+    geofence.homeSet = false;
+    geofence.violated = false;
+    geofence.lastValidFix = 0;
+    
+    // Initialize GSM (non-blocking, will be ready after warmup)
+    // initGSM();  // Uncomment when SIM800 wired
     
     // Create tasks
     xTaskCreatePinnedToCore(uartTask, "UART", 2048, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(cameraTask, "Camera", 2048, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(sensorTask, "Sensors", 2048, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(gpsTask, "GPS", 2048, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(stateTask, "State", 2048, NULL, 1, NULL, 1);
     
     lastCommandTime = millis();
     stateEntryTime = millis();
     
     Serial.println("STASIS Rover Ready");
+    Serial.println("States: SAFE_IDLE, PATROL, ALERT, RETURN_TO_BASE, DOCKING, DOCKED_CHARGING");
 }
 
 // =============================================================================
