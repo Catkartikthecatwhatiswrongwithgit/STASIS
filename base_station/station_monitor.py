@@ -622,6 +622,115 @@ def serial_listener_thread():
 
     logger.info("Serial listener started. Waiting for telemetry...")
 
+    reconnect_delay = 1  # Start with 1 second delay
+    max_reconnect_delay = 30  # Max 30 seconds between attempts
+
+    while True:
+        try:
+            if ser is None or not ser.is_open:
+                # Attempt reconnection with exponential backoff
+                logger.warning("Serial disconnected. Reconnecting in %ds...", reconnect_delay)
+                time.sleep(reconnect_delay)
+                ser = open_serial()
+                if ser is not None:
+                    reconnect_delay = 1  # Reset on success
+                    logger.info("Serial reconnected successfully.")
+                else:
+                    reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+                    continue
+
+            if ser.in_waiting > 0:
+                with serial_port_lock:
+                    raw_line = ser.readline()
+
+                try:
+                    line = raw_line.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    logger.warning("Received non-UTF8 data, skipping.")
+                    continue
+
+                if not line:
+                    continue
+
+                logger.debug("RAW: %s", line)
+
+                # Handle non-JSON messages (camera, bridge, etc.)
+                if line.startswith("HAZARD:") or line.startswith("CAM:") or line.startswith("ERROR:"):
+                    handle_non_json_message(line)
+                    continue
+
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning("Invalid JSON: %s", line[:80])
+                    continue
+
+                # ---- Validate required fields ----
+                if not isinstance(data, dict):
+                    logger.warning("Invalid telemetry: not a dict")
+                    continue
+
+                # ---- Update global state ----
+                latest_telemetry   = data
+                last_telemetry_time = time.time()
+                packet_counter    += 1
+
+                # ---- Database insert ----
+                insert_telemetry(data)
+
+                # ---- Statistics ----
+                update_daily_stats(data)
+
+                # ---- Alert tracking ----
+                if data.get("hazard", False):
+                    alert_entry = {
+                        "timestamp": datetime.datetime.now().isoformat(),
+                        "status":    data.get("status", "UNKNOWN"),
+                        "type":       data.get("hazard_type", "UNKNOWN"),
+                        "temp":      data.get("temp", 0),
+                        "lat":       data.get("lat", 0),
+                        "lng":       data.get("lng", 0),
+                    }
+                    alert_history.append(alert_entry)
+                    logger.warning("HAZARD DETECTED: %s", data.get("status"))
+
+                # ---- Report generation on dock ----
+                status_str = data.get("status", "")
+                if "DOCKED" in str(status_str).upper():
+                    generate_report(data)
+
+                logger.info(
+                    "PKT #%d | Status: %-16s | Bat: %5.1f%% | Temp: %5.1f C | Hazard: %s",
+                    packet_counter,
+                    data.get("status", "?"),
+                    data.get("bat", 0),
+                    data.get("temp", 0),
+                    "YES" if data.get("hazard") else "no",
+                )
+
+            # Check for stale telemetry
+            time_since_update = time.time() - last_telemetry_time
+            if time_since_update > TELEMETRY_TIMEOUT:
+                logger.warning("No telemetry for %.1f seconds - rover may be offline", time_since_update)
+
+            time.sleep(0.05)
+
+        except KeyboardInterrupt:
+            logger.info("Serial listener stopped by user.")
+            break
+        except serial.SerialException as e:
+            logger.error("Serial error: %s. Attempting reconnect...", e)
+            ser = None
+            time.sleep(5)
+        except Exception as e:
+            logger.error("Unexpected error in serial listener: %s", e)
+            time.sleep(1)
+    if ser is None:
+        logger.error("Serial listener cannot start. Running in API-only mode.")
+        return
+
+    logger.info("Serial listener started. Waiting for telemetry...")
+
     while True:
         try:
             if ser.in_waiting > 0:
