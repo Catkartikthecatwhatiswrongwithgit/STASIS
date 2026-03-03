@@ -579,10 +579,19 @@ bool isGSReady() {
 }
 
 /**
- * Safe SMS send - stops motors first to prevent brownout
- * SIM800 draws ~2A peak; motors can cause voltage sag and ESP32 reboot
+ * SIM800 Flood Protection: Cooldown timer
+ * Prevents SMS spam if condition persists
  */
+#define SMS_COOLDOWN_MS 60000  // 60 seconds between SMS
+static uint32_t lastSMSTime = 0;
+
 bool safeSendSMS(const char* message) {
+    // SMS FLOOD PROTECTION: Rate limit to once per 60 seconds
+    uint32_t now = millis();
+    if (now - lastSMSTime < SMS_COOLDOWN_MS) {
+        return false;  // Still in cooldown
+    }
+    
     // Save current motor state
     uint8_t savedSpeed = currentSpeed;
     int8_t savedTurn = currentTurn;
@@ -597,6 +606,11 @@ bool safeSendSMS(const char* message) {
     
     // Send SMS
     bool result = sendSMS_Hardened(message);
+    
+    // Update cooldown if SMS was actually sent
+    if (result) {
+        lastSMSTime = now;
+    }
     
     // Restore motor state (will ramp back smoothly via driveRamped)
     currentSpeed = savedSpeed;
