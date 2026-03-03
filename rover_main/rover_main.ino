@@ -126,6 +126,7 @@ enum AlertType {
 #define DOCK_CONFIRM_TIME_MS   2000   // Must sustain rise for 2 seconds
 #define UNDOCK_CONFIRM_MS      1500   // Must be low for 1.5s to confirm undock
 #define BASELINE_SAMPLES       10      // Samples to establish baseline
+#define DOCK_DEBOUNCE_FRAMES   20      // 20 consecutive frames (2 sec) to confirm dock
 
 struct DockDetector {
     bool isDocked;
@@ -135,10 +136,12 @@ struct DockDetector {
     float baselineVoltage;
     bool baselineStable;
     uint8_t sampleCount;
+    uint8_t dockConfirmCounter;    // Debounce frame counter
+    uint8_t undockConfirmCounter;
 };
 
 static DockDetector dockState = {
-    false, false, 0, 0, 0.0, false, 0
+    false, false, 0, 0, 0.0, false, 0, 0, 0
 };
 
 /**
@@ -170,6 +173,10 @@ bool detectDock(float currentVoltage) {
     bool voltageRising = (voltageRise >= DOCK_VOLTAGE_RISE);
     
     if (voltageRising) {
+        // Reset undock counter, increment dock counter
+        dockState.undockConfirmCounter = 0;
+        dockState.dockConfirmCounter++;
+        
         // Start or continue dock confirmation timer
         if (dockState.undockStartTime > 0) {
             dockState.undockStartTime = 0;
@@ -179,12 +186,13 @@ bool detectDock(float currentVoltage) {
             dockState.dockStartTime = now;
         }
         
-        // Confirm dock after sustained voltage rise
-        if ((now - dockState.dockStartTime) >= DOCK_CONFIRM_TIME_MS) {
+        // DOCK DEBOUNCE: Require 20 consecutive frames of voltage rise
+        if (dockState.dockConfirmCounter >= DOCK_DEBOUNCE_FRAMES) {
             if (!dockState.isDocked) {
                 dockState.isDocked = true;
                 dockState.dockStartTime = 0;
-                Serial.print("DOCK: Detected at ");
+                dockState.dockConfirmCounter = 0;
+                Serial.print("DOCK: Confirmed at ");
                 Serial.print(currentVoltage);
                 Serial.print("V (rise: ");
                 Serial.print(voltageRise);
@@ -192,7 +200,11 @@ bool detectDock(float currentVoltage) {
             }
         }
     } else {
-        // Voltage dropped - start undock timer
+        // Voltage dropped - reset dock counter, increment undock counter
+        dockState.dockConfirmCounter = 0;
+        dockState.undockConfirmCounter++;
+        
+        // Start undock timer
         if (dockState.dockStartTime > 0) {
             dockState.dockStartTime = 0;
         }
@@ -201,11 +213,12 @@ bool detectDock(float currentVoltage) {
             dockState.undockStartTime = now;
         }
         
-        // Confirm undock after sustained low voltage
-        if ((now - dockState.undockStartTime) >= UNDOCK_CONFIRM_MS) {
+        // Require 20 consecutive frames of low voltage to undock
+        if (dockState.undockConfirmCounter >= DOCK_DEBOUNCE_FRAMES) {
             if (dockState.isDocked) {
                 dockState.isDocked = false;
                 dockState.undockStartTime = 0;
+                dockState.undockConfirmCounter = 0;
                 dockState.baselineStable = false;  // Reset baseline
                 dockState.sampleCount = 0;
                 dockState.baselineVoltage = 0;
@@ -280,8 +293,14 @@ void setHomePosition(float lat, float lon) {
 }
 
 void updateGPS(float lat, float lon, uint32_t fixAge) {
+    // GPS GHOSTING FIX: Ignore invalid coordinates
     if (fixAge > GPS_VALID_AGE_MS) {
         return;  // Ignore stale fixes
+    }
+    
+    // Ignore zero coordinates (GPS loss = 0.00,0.00)
+    if (lat == 0.0 && lon == 0.0) {
+        return;  // Invalid GPS - likely no fix
     }
     
     geofence.currentLat = lat;
@@ -559,6 +578,33 @@ bool isGSReady() {
     return (gsm.status == GSM_READY);
 }
 
+/**
+ * Safe SMS send - stops motors first to prevent brownout
+ * SIM800 draws ~2A peak; motors can cause voltage sag and ESP32 reboot
+ */
+bool safeSendSMS(const char* message) {
+    // Save current motor state
+    uint8_t savedSpeed = currentSpeed;
+    int8_t savedTurn = currentTurn;
+    
+    // STOP MOTORS before SMS - prevent brownout
+    currentSpeed = 0;
+    currentTurn = 0;
+    drive(0, 0);
+    
+    // Wait for rail to stabilize (100ms)
+    delay(100);
+    
+    // Send SMS
+    bool result = sendSMS_Hardened(message);
+    
+    // Restore motor state (will ramp back smoothly via driveRamped)
+    currentSpeed = savedSpeed;
+    currentTurn = savedTurn;
+    
+    return result;
+}
+
 void sendGeofenceAlert() {
     if (alertSent) return;
     
@@ -567,7 +613,7 @@ void sendGeofenceAlert() {
         "STASIS: Geofence breach! Lat: %.5f Lon: %.5f",
         (double)latitude, (double)longitude);
     
-    if (sendSMS_Hardened(msg)) {
+    if (safeSendSMS(msg)) {
         alertSent = true;
     }
 }
@@ -583,7 +629,7 @@ void sendHazardAlert(AlertType type) {
         msg = "STASIS: Seismic activity detected";
     }
     
-    if (sendSMS_Hardened(msg)) {
+    if (safeSendSMS(msg)) {
         alertSent = true;
     }
 }
@@ -825,7 +871,7 @@ bool parseDockCommand(uint8_t byte, DockCommand* cmd) {
 // =============================================================================
 
 #define ULTRASONIC_MAX_DISTANCE_CM  400
-#define ULTRASONIC_TIMEOUT_US        25000
+#define ULTRASONIC_TIMEOUT_US        30000  // 30ms - prevents 1s freeze on echo miss
 
 static struct {
     uint8_t state;            // 0=idle, 1=triggering, 2=waiting_echo, 3=measuring
