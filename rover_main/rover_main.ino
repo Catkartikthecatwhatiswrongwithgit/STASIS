@@ -36,6 +36,7 @@
 #define ULTRASONIC_TRIG 10
 #define ULTRASONIC_ECHO 9
 #define ONEWIRE_PIN     21   // DS18B20
+#define LDR_PIN         0    // ADC for LDR (light sensor)
 #define BUZZER_PIN      14
 #define STATUS_LED      45
 
@@ -949,14 +950,195 @@ float readUltrasonic() {
 }
 
 // =============================================================================
-// TEMPERATURE SENSOR
+// ENVIRONMENTAL SENSORS - DS18B20 + LDR
 // =============================================================================
 
-// Simple DS18B20 reading (would use OneWire library in production)
+// Note: These require OneWire library:
+// #include <OneWire.h>
+// #include <DallasTemperature.h>
+
+// DS18B20 requires 4.7kΩ pull-up resistor on ONEWIRE_PIN
+
+#define TEMP_RESOLUTION    12    // 12-bit resolution
+#define TEMP_CONVERSION_MS 750   // Conversion time for 12-bit
+#define LDR_SAMPLES        8      // Moving average for LDR
+
+// Environmental thresholds
+#define TEMP_FIRE_THRESHOLD   60.0   // °C - fire detected
+#define TEMP_LOW_WARNING      5.0    // °C - too cold
+#define LDR_DARK_THRESHOLD   800    // ADC value - too dark
+#define LDR_BRIGHT_THRESHOLD 200    // ADC value - bright (daytime)
+
+struct EnvSensor {
+    float temperature;      // DS18B20 reading
+    uint16_t lightLevel;  // LDR ADC value (0-4095)
+    bool tempValid;        // DS18B20 connected
+    bool lightValid;       // LDR connected
+    uint32_t lastTempRead;
+    uint32_t lastLdrRead;
+};
+
+static EnvSensor env = {
+    25.0,  // temperature
+    0,     // lightLevel
+    false,  // tempValid
+    false,  // lightValid
+    0,      // lastTempRead
+    0       // lastLdrRead
+};
+
+// OneWire and DallasTemperature objects (uncomment if libraries available)
+// static OneWire oneWire(ONEWIRE_PIN);
+// static DallasTemperature sensors(&oneWire);
+
+/**
+ * Initialize DS18B20 temperature sensor
+ * Call once at startup
+ */
+void initTemperatureSensor() {
+    // Uncomment for actual DS18B20:
+    // sensors.begin();
+    // sensors.setResolution(TEMP_RESOLUTION);
+    // sensors.requestTemperatures();
+    env.lastTempRead = millis();
+    env.tempValid = false;
+    Serial.println("TEMP: Sensor initialized (placeholder)");
+}
+
+/**
+ * Read DS18B20 temperature
+ * Non-blocking - returns last valid reading
+ * Call repeatedly
+ */
 float readTemperature() {
-    // Placeholder - actual implementation would use OneWire + DallasTemperature
-    // For now, return simulated value
-    return temperature;
+    uint32_t now = millis();
+    
+    // Check if it's time to read (every 2 seconds)
+    if (now - env.lastTempRead >= 2000) {
+        // In production, use:
+        // float tempC = sensors.getTempCByIndex(0);
+        // if (tempC != DEVICE_DISCONNECTED_C) {
+        //     env.temperature = tempC;
+        //     env.tempValid = true;
+        // }
+        
+        // Placeholder: simulate temperature reading
+        // Replace with actual OneWire code above
+        env.lastTempRead = now;
+    }
+    
+    return env.temperature;
+}
+
+/**
+ * Initialize LDR light sensor
+ * Call once at startup
+ */
+void initLDR() {
+    pinMode(LDR_PIN, INPUT);
+    env.lightValid = false;
+    Serial.println("LDR: Sensor initialized");
+}
+
+/**
+ * Read LDR with moving average
+ * Returns ADC value (0 = dark, 4095 = bright)
+ */
+uint16_t readLDR() {
+    static uint16_t ldrBuffer[LDR_SAMPLES];
+    static uint8_t ldrIndex = 0;
+    static bool bufferFull = false;
+    
+    // Read ADC
+    uint16_t adcValue = analogRead(LDR_PIN);
+    
+    // Add to buffer
+    ldrBuffer[ldrIndex] = adcValue;
+    ldrIndex = (ldrIndex + 1) % LDR_SAMPLES;
+    if (ldrIndex == 0) bufferFull = true;
+    
+    // Calculate average
+    uint32_t sum = 0;
+    uint8_t count = bufferFull ? LDR_SAMPLES : ldrIndex;
+    for (uint8_t i = 0; i < count; i++) {
+        sum += ldrBuffer[i];
+    }
+    env.lightLevel = (count > 0) ? (sum / count) : adcValue;
+    env.lightValid = true;
+    
+    return env.lightLevel;
+}
+
+/**
+ * Get light level as percentage (0% = dark, 100% = bright)
+ */
+uint8_t getLightPercent() {
+    // Map ADC to percentage (inverted - lower ADC = darker)
+    // Adjust thresholds based on your LDR
+    if (env.lightLevel > LDR_DARK_THRESHOLD) return 0;
+    if (env.lightLevel < LDR_BRIGHT_THRESHOLD) return 100;
+    return map(env.lightLevel, LDR_DARK_THRESHOLD, LDR_BRIGHT_THRESHOLD, 0, 100);
+}
+
+/**
+ * Interlinked environmental check
+ * Returns combined hazard status based on temperature AND light
+ */
+enum EnvHazard {
+    ENV_OK = 0,
+    ENV_FIRE_RISK,      // High temperature
+    ENV_DARK_WARNING,    // Too dark (could indicate night/fire smoke)
+    ENV_TEMP_LOW        // Too cold
+};
+
+EnvHazard checkEnvironment() {
+    float temp = readTemperature();
+    uint16_t light = readLDR();
+    
+    // Check temperature first (fire risk)
+    if (temp >= TEMP_FIRE_THRESHOLD) {
+        return ENV_FIRE_RISK;
+    }
+    
+    // Check for darkness (could be smoke or night)
+    if (light > LDR_DARK_THRESHOLD) {
+        return ENV_DARK_WARNING;
+    }
+    
+    // Check for cold
+    if (temp < TEMP_LOW_WARNING) {
+        return ENV_TEMP_LOW;
+    }
+    
+    return ENV_OK;
+}
+
+/**
+ * Update all environmental sensors
+ * Call from sensor task
+ */
+void updateEnvironmentSensors() {
+    // Update temperature
+    float temp = readTemperature();
+    
+    // Update LDR
+    uint16_t light = readLDR();
+    
+    // Log if significant change
+    static float lastLoggedTemp = 0;
+    static uint16_t lastLoggedLight = 0;
+    
+    if (abs(temp - lastLoggedTemp) > 5.0 || abs((int)light - (int)lastLoggedLight) > 100) {
+        Serial.print("ENV: Temp=");
+        Serial.print(temp);
+        Serial.print("C Light=");
+        Serial.print(light);
+        Serial.print(" (");
+        Serial.print(getLightPercent());
+        Serial.println("%)");
+        lastLoggedTemp = temp;
+        lastLoggedLight = light;
+    }
 }
 
 // =============================================================================
@@ -1110,7 +1292,7 @@ void updateStateMachine() {
             
             // Sensor fusion: require BOTH temperature AND camera flag for fire
             if (currentAlert == ALERT_FIRE) {
-                if (temperature > 60.0 && fireDetected) {
+                if (env.temperature > TEMP_FIRE_THRESHOLD && fireDetected) {
                     alertConfirmed = true;
                 }
             }
@@ -1463,8 +1645,8 @@ void sensorTask(void* parameter) {
             currentSpeed = 15;
         }
         
-        // Read temperature (placeholder - would use OneWire library)
-        // temperature = readTemperature();
+        // Update environmental sensors (DS18B20 + LDR)
+        updateEnvironmentSensors();
         
         // Update battery and dock detection
         updateBattery();
@@ -1516,6 +1698,10 @@ void setup() {
     // Configure ultrasonic
     pinMode(ULTRASONIC_TRIG, OUTPUT);
     pinMode(ULTRASONIC_ECHO, INPUT);
+    
+    // Initialize environmental sensors (DS18B20 + LDR)
+    initTemperatureSensor();
+    initLDR();
     
     // Configure buzzer and status LED
     pinMode(BUZZER_PIN, OUTPUT);
