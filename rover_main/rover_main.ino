@@ -1047,6 +1047,15 @@ void updateStateMachine() {
             break;
             
         case STATE_PATROL:
+            // GPS STALE CHECK: Halt if no GPS for 5 seconds
+            if (gpsFixAge > 5000) {
+                currentSpeed = 0;
+                currentTurn = 0;
+                drive(0, 0);
+                Serial.println("GPS: No fix - SAFE_HALT");
+                break;
+            }
+            
             // Transitions:
             // Geofence violation takes priority - send alert
             if (isGeofenceViolated() && !alertSent) {
@@ -1106,6 +1115,15 @@ void updateStateMachine() {
             break;
             
         case STATE_RETURN_TO_BASE:
+            // GPS STALE CHECK: Halt if no GPS for 5 seconds
+            if (gpsFixAge > 5000) {
+                currentSpeed = 0;
+                currentTurn = 0;
+                drive(0, 0);
+                Serial.println("GPS: No fix - SAFE_HALT");
+                break;
+            }
+            
             // Navigate toward base (using GPS - simplified)
             if (dockingEnabled) {
                 currentState = STATE_DOCKING;
