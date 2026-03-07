@@ -1,0 +1,1826 @@
+/**
+ * STASIS Rover - Multi-State Autonomous Controller
+ * ====================================================
+ * ESP32-S3 Main Firmware
+ * 
+ * Handles: Navigation, Motor Control, Sensor Fusion, State Machine,
+ *          Dock Detection, GPS Geofence, Charging Safety
+ * 
+ * Hardware: ESP32-S3, L9110S motors, DS18B20, HC-SR04, Neo-6M GPS, SIM800L
+ * 
+ * Author: EdgeCase Team
+ */
+
+#include <Arduino.h>
+#include <driver/uart.h>
+#include <driver/gpio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+
+// =============================================================================
+// HARDWARE CONFIGURATION - Updated for new requirements
+// =============================================================================
+
+// Motor Driver Pins (L9110S - 4WD paired)
+#define MOTOR_A_PWM    4
+#define MOTOR_A_DIR    2
+#define MOTOR_B_PWM    5
+#define MOTOR_B_DIR    18
+#define MOTOR_C_PWM    6
+#define MOTOR_C_DIR    7
+#define MOTOR_D_PWM    15
+#define MOTOR_D_DIR    16
+
+// Sensors
+#define ULTRASONIC_TRIG 10
+#define ULTRASONIC_ECHO 9
+#define ONEWIRE_PIN     21   // DS18B20
+#define LDR_PIN         0    // ADC for LDR (light sensor)
+#define BUZZER_PIN      14
+#define STATUS_LED      45
+
+// GPS (NEO-6M) - SoftwareSerial on ESP32
+#define GPS_TX_PIN      8
+#define GPS_RX_PIN      19
+
+// SIM800L GSM Module
+#define SIM800_TX       13
+#define SIM800_RX       12
+
+// Battery Monitor (ADC)
+#define BATTERY_ADC     1
+
+// Optional: Dedicated dock detect GPIO (if wired)
+// #define DOCK_DETECT_PIN  47  // Uncomment if hardware present
+
+// UART for Pi Zero communication
+#define UART_TX_PIN    43
+#define UART_RX_PIN    44
+#define UART_NUM       UART_NUM_1
+#define UART_BAUD      115200
+
+// PWM Configuration
+#define PWM_FREQ       1000
+#define PWM_RESOLUTION 8
+
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
+
+// Communication Timeouts
+#define COMMAND_TIMEOUT_MS  500   // Stop if no command from Pi
+#define ESPNOW_TIMEOUT_MS   1000  // Stop if no ESP-NOW from base
+
+// =============================================================================
+// COMMAND PROTOCOL STRUCTURES
+// =============================================================================
+
+/**
+ * DockCmd: Compact command from Pi Zero for docking
+ * Packet format (6 bytes):
+ *   [0] HEADER: 0xAA
+ *   [1] turn:   int8_t  -100 to +100
+ *   [2] speed:  uint8_t 0-100
+ *   [3] docked: uint8_t 0 or 1
+ *   [4] checksum: XOR of bytes 1-3
+ *   [5] TAIL: 0x55
+ */
+struct DockCommand {
+    int8_t turn;       // -100 to +100
+    uint8_t speed;     // 0 to 100
+    uint8_t docked;    // 0 or 1
+    uint8_t checksum;
+};
+
+// =============================================================================
+// STATE MACHINE DEFINITIONS - Validated for production
+// =============================================================================
+
+enum RoverState {
+    STATE_SAFE_IDLE = 0,      // Minimal power, sensors active
+    STATE_PATROL,             // Autonomous patrol with geofence
+    STATE_ALERT,              // Hazard detected - investigating
+    STATE_RETURN_TO_BASE,     // Geofence violation or manual recall
+    STATE_DOCKING,            // AprilTag precision approach
+    STATE_DOCKED_CHARGING     // Passive charging, motors disabled
+};
+
+enum AlertType {
+    ALERT_NONE = 0,
+    ALERT_FIRE,
+    ALERT_EARTHQUAKE,
+    ALERT_GEOFENCE,
+    ALERT_INTRUDER
+};
+
+// =============================================================================
+// GLOBAL STATE — shared across FreeRTOS tasks
+// FIX C5: These were used throughout but never declared, causing compile errors.
+// =============================================================================
+volatile RoverState currentState    = STATE_SAFE_IDLE;
+volatile RoverState previousState   = STATE_SAFE_IDLE;
+volatile AlertType  currentAlert    = ALERT_NONE;
+volatile bool       estopTriggered  = false;
+volatile bool       dockingEnabled  = false;
+volatile bool       lowPowerMode    = false;
+volatile bool       fireDetected    = false;
+volatile bool       humanDetected   = false;
+volatile bool       tiltDetected    = false;
+volatile bool       alertSent       = false;
+volatile bool       alertConfirmed  = false;
+volatile int8_t     currentTurn     = 0;
+volatile uint8_t    currentSpeed    = 0;
+volatile float      latitude        = 0.0f;
+volatile float      longitude       = 0.0f;
+volatile float      batteryVoltage  = 0.0f;
+volatile float      batteryPercent  = 0.0f;
+volatile float      distance        = 999.0f;
+volatile uint32_t   gpsFixAge       = 60000;
+volatile uint32_t   lastCommandTime = 0;
+volatile uint32_t   stateEntryTime  = 0;
+volatile uint32_t   alertStartTime  = 0;
+
+#define LOW_BATTERY_THRESHOLD  20   // percent — triggers low power mode and return-to-base
+
+// =============================================================================
+// DOCK DETECTION MODULE - Robust battery voltage rise detection
+// =============================================================================
+// Approach: Compare current voltage to baseline, detect sustained rise
+// Primary method: Monitor voltage increase when docked (charging raises voltage)
+// Debouncing: Require sustained voltage rise for CONFIRM_TIME_MS
+// Tolerates: Noisy contact, brief disconnects
+// Non-blocking: Uses millis() timing
+
+#define DOCK_VOLTAGE_RISE      0.4    // Minimum voltage rise above baseline (0.4V)
+#define DOCK_CONFIRM_TIME_MS   2000   // Must sustain rise for 2 seconds
+#define UNDOCK_CONFIRM_MS      1500   // Must be low for 1.5s to confirm undock
+#define BASELINE_SAMPLES       10      // Samples to establish baseline
+#define DOCK_DEBOUNCE_FRAMES   20      // 20 consecutive frames (2 sec) to confirm dock
+
+struct DockDetector {
+    bool isDocked;
+    bool wasDocked;
+    uint32_t dockStartTime;
+    uint32_t undockStartTime;
+    float baselineVoltage;
+    bool baselineStable;
+    uint8_t sampleCount;
+    uint8_t dockConfirmCounter;    // Debounce frame counter
+    uint8_t undockConfirmCounter;
+};
+
+static DockDetector dockState = {
+    false, false, 0, 0, 0.0, false, 0, 0, 0
+};
+
+/**
+ * Robust dock detection using voltage rise above baseline
+ * Call every battery update cycle (~100ms)
+ * Returns true on rising edge (just docked)
+ */
+bool detectDock(float currentVoltage) {
+    uint32_t now = millis();
+    
+    // Phase 1: Establish baseline (first 10 samples)
+    if (!dockState.baselineStable) {
+        if (dockState.sampleCount < BASELINE_SAMPLES) {
+            dockState.baselineVoltage += currentVoltage;
+            dockState.sampleCount++;
+        } else if (dockState.sampleCount == BASELINE_SAMPLES) {
+            dockState.baselineVoltage /= BASELINE_SAMPLES;
+            dockState.baselineStable = true;
+            Serial.print("DOCK: Baseline established at ");
+            Serial.print(dockState.baselineVoltage);
+            Serial.println("V");
+            dockState.sampleCount++;
+        }
+        return false;
+    }
+    
+    // Phase 2: Monitor for voltage rise (charging)
+    float voltageRise = currentVoltage - dockState.baselineVoltage;
+    bool voltageRising = (voltageRise >= DOCK_VOLTAGE_RISE);
+    
+    if (voltageRising) {
+        // Reset undock counter, increment dock counter
+        dockState.undockConfirmCounter = 0;
+        dockState.dockConfirmCounter++;
+        
+        // Start or continue dock confirmation timer
+        if (dockState.undockStartTime > 0) {
+            dockState.undockStartTime = 0;
+        }
+        
+        if (dockState.dockStartTime == 0) {
+            dockState.dockStartTime = now;
+        }
+        
+        // DOCK DEBOUNCE: Require 20 consecutive frames of voltage rise
+        if (dockState.dockConfirmCounter >= DOCK_DEBOUNCE_FRAMES) {
+            if (!dockState.isDocked) {
+                dockState.isDocked = true;
+                dockState.dockStartTime = 0;
+                dockState.dockConfirmCounter = 0;
+                Serial.print("DOCK: Confirmed at ");
+                Serial.print(currentVoltage);
+                Serial.print("V (rise: ");
+                Serial.print(voltageRise);
+                Serial.println("V)");
+            }
+        }
+    } else {
+        // Voltage dropped - reset dock counter, increment undock counter
+        dockState.dockConfirmCounter = 0;
+        dockState.undockConfirmCounter++;
+        
+        // Start undock timer
+        if (dockState.dockStartTime > 0) {
+            dockState.dockStartTime = 0;
+        }
+        
+        if (dockState.undockStartTime == 0) {
+            dockState.undockStartTime = now;
+        }
+        
+        // Require 20 consecutive frames of low voltage to undock
+        if (dockState.undockConfirmCounter >= DOCK_DEBOUNCE_FRAMES) {
+            if (dockState.isDocked) {
+                dockState.isDocked = false;
+                dockState.undockStartTime = 0;
+                dockState.undockConfirmCounter = 0;
+                dockState.baselineStable = false;  // Reset baseline
+                dockState.sampleCount = 0;
+                dockState.baselineVoltage = 0;
+                Serial.println("DOCK: Undocked - baseline reset");
+            }
+        }
+    }
+    
+    // Return true on rising edge (just docked)
+    bool justDocked = dockState.isDocked && !dockState.wasDocked;
+    dockState.wasDocked = dockState.isDocked;
+    
+    return justDocked;
+}
+
+bool isDocked() {
+    return dockState.isDocked;
+}
+
+// =============================================================================
+// GPS GEOFENCE MODULE
+// =============================================================================
+// Uses flat-earth approximation (acceptable for small areas)
+// Stores home position at startup
+// Monitors distance from home
+// Non-blocking, tolerant of GPS signal loss
+
+#define GEOFENCE_RADIUS_M   50.0    // 50 meter radius
+#define GPS_VALID_AGE_MS   10000   // Discard fixes older than 10s
+
+struct GeofenceMonitor {
+    float homeLat;
+    float homeLon;
+    bool homeSet;
+    bool violated;
+    uint32_t lastValidFix;
+    float currentLat;
+    float currentLon;
+};
+
+static GeofenceMonitor geofence = {
+    0.0f, 0.0f, false, false, 0, 0.0f, 0.0f
+};
+
+// Flat-earth approximation for small distances
+// Returns distance in meters
+float calculateDistance(float lat1, float lon1, float lat2, float lon2) {
+    const float EARTH_RADIUS = 6371000.0;  // meters
+    const float PI = 3.14159265;
+    
+    float dLat = (lat2 - lat1) * PI / 180.0;
+    float dLon = (lon2 - lon1) * PI / 180.0;
+    
+    float a = sin(dLat / 2) * sin(dLat / 2) +
+              cos(lat1 * PI / 180.0) * cos(lat2 * PI / 180.0) *
+              sin(dLon / 2) * sin(dLon / 2);
+    
+    float c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    
+    return EARTH_RADIUS * c;
+}
+
+void setHomePosition(float lat, float lon) {
+    geofence.homeLat = lat;
+    geofence.homeLon = lon;
+    geofence.homeSet = true;
+    geofence.violated = false;
+    Serial.print("GEOFENCE: Home set to ");
+    Serial.print(lat, 6);
+    Serial.print(", ");
+    Serial.println(lon, 6);
+}
+
+void updateGPS(float lat, float lon, uint32_t fixAge) {
+    // GPS GHOSTING FIX: Ignore invalid coordinates
+    if (fixAge > GPS_VALID_AGE_MS) {
+        return;  // Ignore stale fixes
+    }
+    
+    // Ignore zero coordinates (GPS loss = 0.00,0.00)
+    if (lat == 0.0 && lon == 0.0) {
+        return;  // Invalid GPS - likely no fix
+    }
+    
+    geofence.currentLat = lat;
+    geofence.currentLon = lon;
+    geofence.lastValidFix = millis();
+    
+    if (!geofence.homeSet) {
+        // First valid fix - set as home
+        setHomePosition(lat, lon);
+        return;
+    }
+    
+    // Check distance from home
+    float distance = calculateDistance(
+        geofence.homeLat, geofence.homeLon,
+        lat, lon
+    );
+    
+    if (distance > GEOFENCE_RADIUS_M && !geofence.violated) {
+        geofence.violated = true;
+        Serial.print("GEOFENCE: VIOLATION! Distance: ");
+        Serial.println(distance);
+    } else if (distance <= GEOFENCE_RADIUS_M * 0.8) {
+        // Clear violation when back within 80% of fence (hysteresis)
+        geofence.violated = false;
+    }
+}
+
+bool isGeofenceViolated() {
+    return geofence.violated;
+}
+
+bool isGPSValid() {
+    return (millis() - geofence.lastValidFix) < GPS_VALID_AGE_MS;
+}
+
+// =============================================================================
+// CHARGING SAFETY MODULE
+// =============================================================================
+// When docked:
+// - Immediately stop all motors
+// - Enter reduced-power sensor mode
+// - Keep critical monitoring active
+// - Log charge start timestamp
+// - Attempt charge completion detection
+// Non-blocking state machine
+
+#define CHARGE_COMPLETE_VOLTAGE 8.4   // 4.2V per cell for 2S
+#define CHARGE_COMPLETE_TIME    600000  // 10 minutes max charge
+
+static bool chargeStarted = false;
+static uint32_t chargeStartTime = 0;
+static bool chargeComplete = false;
+static bool chargeBeepDone = false;  // Reset on undock
+
+void onDockDetected() {
+    chargeStarted = true;
+    chargeStartTime = millis();
+    chargeComplete = false;
+    
+    Serial.println("CHARGING: Dock detected - starting charge");
+}
+
+void onUndocked() {
+    chargeStarted = false;
+    chargeStartTime = 0;
+    chargeComplete = false;
+    chargeBeepDone = false;  // Reset for next charge cycle
+    
+    Serial.println("CHARGING: Undocked - resetting charge state");
+}
+
+bool isChargingComplete(float voltage) {
+    if (!chargeStarted || chargeComplete) {
+        return chargeComplete;
+    }
+    
+    // Check voltage threshold
+    if (voltage >= CHARGE_COMPLETE_VOLTAGE) {
+        chargeComplete = true;
+        Serial.println("CHARGING: Complete - voltage threshold reached");
+        return true;
+    }
+    
+    // Check timeout
+    if ((millis() - chargeStartTime) > CHARGE_COMPLETE_TIME) {
+        chargeComplete = true;
+        Serial.println("CHARGING: Complete - timeout");
+        return true;
+    }
+    
+    return false;
+}
+
+bool hasChargingStarted() {
+    return chargeStarted;
+}
+
+// =============================================================================
+// GSM ALERT ROUTINES - HARDENED SIM800L
+// =============================================================================
+// Non-blocking with retry, network registration, graceful failure
+// Status: Ready, Searching, NoSim, Failed
+
+#define GSM_INIT_TIMEOUT_MS  30000   // 30 seconds to initialize
+#define SMS_RETRY_MAX        3        // Max SMS retry attempts
+#define SMS_RETRY_DELAY_MS  5000     // 5 seconds between retries
+
+enum GSMStatus {
+    GSM_OFFLINE = 0,
+    GSM_INIT,
+    GSM_SEARCHING,
+    GSM_READY,
+    GSM_FAILED
+};
+
+struct GSMState {
+    GSMStatus status;
+    uint32_t initStartTime;
+    uint8_t retryCount;
+    String phoneNumber;
+    bool smsInProgress;
+};
+
+static GSMState gsm = {
+    GSM_OFFLINE, 0, 0, "+1234567890", false
+};
+
+/**
+ * Non-blocking GSM initialization
+ * Call repeatedly from task
+ * Returns true when ready to send SMS
+ */
+bool updateGSM() {
+    uint32_t now = millis();
+    
+    switch (gsm.status) {
+        case GSM_OFFLINE:
+            // Start initialization
+            gsm.status = GSM_INIT;
+            gsm.initStartTime = now;
+            gsm.retryCount = 0;
+            Serial.println("GSM: Starting init...");
+            // FIX C4: Serial2 is used by GPS (NEO-6M on pins 8,19).
+            // SIM800L (pins 12,13) MUST use Serial1 to avoid corrupting GPS stream.
+            Serial1.begin(9600, SERIAL_8N1, SIM800_RX, SIM800_TX);
+            break;
+            
+        case GSM_INIT:
+            // Wait for AT response
+            if (now - gsm.initStartTime > 2000) {
+                Serial1.println("AT");
+                gsm.initStartTime = now;
+            }
+            if (Serial1.available()) {
+                String response = "";
+                while (Serial1.available()) {
+                    response += (char)Serial1.read();
+                }
+                if (response.indexOf("OK") >= 0) {
+                    gsm.status = GSM_SEARCHING;
+                    gsm.initStartTime = now;
+                    Serial.println("GSM: AT OK - searching network...");
+                }
+            }
+            // Timeout after 30 seconds
+            if (now - gsm.initStartTime > GSM_INIT_TIMEOUT_MS) {
+                gsm.status = GSM_FAILED;
+                Serial.println("GSM: Init failed - timeout");
+            }
+            break;
+            
+        case GSM_SEARCHING:
+            // Wait for network registration
+            if (now - gsm.initStartTime > 1000) {
+                Serial1.println("AT+CREG?");
+                gsm.initStartTime = now;
+            }
+            if (Serial1.available()) {
+                String response = "";
+                while (Serial1.available()) {
+                    response += (char)Serial1.read();
+                }
+                // CREG: 1 = Registered, home, 5 = Registered, roaming
+                if (response.indexOf(",1") >= 0 || response.indexOf(",5") >= 0) {
+                    gsm.status = GSM_READY;
+                    Serial.println("GSM: Network registered - READY");
+                }
+            }
+            // Timeout after 60 seconds
+            if (now - gsm.initStartTime > 60000) {
+                gsm.status = GSM_FAILED;
+                Serial.println("GSM: Network registration failed");
+            }
+            break;
+            
+        case GSM_READY:
+            // Ready for SMS
+            break;
+            
+        case GSM_FAILED:
+            // Attempt recovery every 60 seconds
+            if (now - gsm.initStartTime > 60000) {
+                gsm.status = GSM_OFFLINE;
+                gsm.initStartTime = now;
+            }
+            break;
+    }
+    
+    return (gsm.status == GSM_READY);
+}
+
+/**
+ * Send SMS with retry logic (non-blocking)
+ * Returns: true if sent, false if failed/retrying
+ */
+bool sendSMS_Hardened(const char* message) {
+    static uint32_t retryStartTime = 0;
+    static const char* pendingMessage = NULL;
+    
+    if (gsm.status != GSM_READY) {
+        return false;
+    }
+    
+    // If we have a pending message being sent
+    if (pendingMessage != NULL) {
+        if (Serial1.available()) {
+            String response = "";
+            while (Serial1.available()) {
+                response += (char)Serial1.read();
+            }
+            
+            if (response.indexOf(">") >= 0) {
+                // Ready for message body
+                Serial1.print(pendingMessage);
+                Serial1.write(26);  // Ctrl+Z
+                retryStartTime = millis();
+            }
+            else if (response.indexOf("OK") >= 0) {
+                // Message sent successfully
+                Serial.println("GSM: SMS sent successfully");
+                pendingMessage = NULL;
+                gsm.retryCount = 0;
+                return true;
+            }
+            else if (response.indexOf("ERROR") >= 0 || (millis() - retryStartTime > 10000)) {
+                // Failed - retry
+                gsm.retryCount++;
+                if (gsm.retryCount >= SMS_RETRY_MAX) {
+                    Serial.println("GSM: SMS failed after max retries");
+                    pendingMessage = NULL;
+                    gsm.retryCount = 0;
+                    return false;
+                }
+                Serial.print("GSM: SMS retry ");
+                Serial.println(gsm.retryCount);
+                retryStartTime = millis();
+                // Will retry in next call
+            }
+        }
+        return false;  // Still in progress
+    }
+    
+    // Start new SMS
+    if (gsm.retryCount < SMS_RETRY_MAX) {
+        pendingMessage = message;
+        Serial1.print("AT+CMGS=\"");
+        Serial1.print(gsm.phoneNumber);
+        Serial1.println("\"");
+        retryStartTime = millis();
+    }
+    
+    return false;
+}
+
+bool isGSReady() {
+    return (gsm.status == GSM_READY);
+}
+
+/**
+ * SIM800 Flood Protection: Cooldown timer
+ * Prevents SMS spam if condition persists
+ */
+#define SMS_COOLDOWN_MS 60000  // 60 seconds between SMS
+static uint32_t lastSMSTime = 0;
+
+bool safeSendSMS(const char* message) {
+    // SMS FLOOD PROTECTION: Rate limit to once per 60 seconds
+    uint32_t now = millis();
+    if (now - lastSMSTime < SMS_COOLDOWN_MS) {
+        return false;  // Still in cooldown
+    }
+    
+    // Save current motor state
+    uint8_t savedSpeed = currentSpeed;
+    int8_t savedTurn = currentTurn;
+    
+    // STOP MOTORS before SMS - prevent brownout
+    currentSpeed = 0;
+    currentTurn = 0;
+    drive(0, 0);
+    
+    // Wait for rail to stabilize (100ms)
+    delay(100);
+    
+    // Send SMS
+    bool result = sendSMS_Hardened(message);
+    
+    // Update cooldown if SMS was actually sent
+    if (result) {
+        lastSMSTime = now;
+    }
+    
+    // Restore motor state (will ramp back smoothly via driveRamped)
+    currentSpeed = savedSpeed;
+    currentTurn = savedTurn;
+    
+    return result;
+}
+
+void sendGeofenceAlert() {
+    if (alertSent) return;
+    
+    char msg[100];
+    snprintf(msg, sizeof(msg), 
+        "STASIS: Geofence breach! Lat: %.5f Lon: %.5f",
+        (double)latitude, (double)longitude);
+    
+    if (safeSendSMS(msg)) {
+        alertSent = true;
+    }
+}
+
+void sendHazardAlert(AlertType type) {
+    if (alertSent) return;
+    
+    const char* msg = "STASIS: Hazard detected";
+    
+    if (type == ALERT_FIRE) {
+        msg = "STASIS: FIRE DETECTED! Immediate attention!";
+    } else if (type == ALERT_EARTHQUAKE) {
+        msg = "STASIS: Seismic activity detected";
+    }
+    
+    if (safeSendSMS(msg)) {
+        alertSent = true;
+    }
+}
+
+// =============================================================================
+// COMMAND PARSING
+// =============================================================================
+
+String commandBuffer = "";
+
+void processCommand(String cmd) {
+    cmd.trim();
+    cmd.toUpperCase();
+    
+    if (cmd == "STOP") {
+        currentState = STATE_SAFE_IDLE;
+        currentSpeed = 0;
+        currentTurn = 0;
+        drive(0, 0);
+        Serial.println("CMD:STOP_OK");
+    }
+    else if (cmd == "FORWARD") {
+        currentTurn = 0;
+        currentSpeed = 50;
+        if (currentState == STATE_SAFE_IDLE) currentState = STATE_PATROL;
+    }
+    else if (cmd == "BACKWARD") {
+        currentTurn = 0;
+        currentSpeed = -50;  // FIX C2: negative speed = reverse in setMotor logic
+        if (currentState == STATE_SAFE_IDLE) currentState = STATE_PATROL;
+    }
+    else if (cmd == "LEFT") {
+        currentTurn = -50;
+        currentSpeed = 30;
+        if (currentState == STATE_SAFE_IDLE) currentState = STATE_PATROL;
+    }
+    else if (cmd == "RIGHT") {
+        currentTurn = 50;
+        currentSpeed = 30;
+        if (currentState == STATE_SAFE_IDLE) currentState = STATE_PATROL;
+    }
+    else if (cmd == "PATROL" || cmd == "START_PATROL") {
+        currentState = STATE_PATROL;
+        currentSpeed = 40;
+        currentTurn = 0;
+        alertSent = false;
+    }
+    else if (cmd == "STOP_PATROL") {
+        currentState = STATE_SAFE_IDLE;
+        currentSpeed = 0;
+    }
+    else if (cmd == "HOME" || cmd == "RETURN_HOME" || cmd == "RETURN_BASE") {
+        currentState = STATE_RETURN_TO_BASE;
+        currentSpeed = 40;
+        alertSent = false;
+    }
+    else if (cmd == "DOCKING" || cmd == "ENABLE_DOCKING") {
+        currentState = STATE_DOCKING;
+        currentSpeed = 0;
+    }
+    else if (cmd == "DISABLE_DOCKING") {
+        currentState = STATE_SAFE_IDLE;
+    }
+    else if (cmd == "RESET") {
+        currentState = STATE_SAFE_IDLE;
+        currentSpeed = 0;
+        currentTurn = 0;
+        currentAlert = ALERT_NONE;
+        estopTriggered = false;
+        alertSent = false;
+        Serial.println("CMD:RESET_OK");
+    }
+    else if (cmd == "ALERT") {
+        currentState = STATE_ALERT;
+        currentSpeed = 0;
+    }
+    else if (cmd == "SETHOME") {
+        if (latitude != 0.0 && longitude != 0.0) {
+            setHomePosition(latitude, longitude);
+            Serial.println("CMD:SETHOME_OK");
+        } else {
+            Serial.println("CMD:SETHOME_FAIL - no GPS fix");
+        }
+    }
+    else {
+        Serial.println("CMD:UNKNOWN");
+    }
+    
+    lastCommandTime = millis();
+}
+
+// =============================================================================
+// MOTOR CONTROL - L9110S DRIVER - HARDENED
+// =============================================================================
+
+// Motor speed ramping for smooth changes
+#define SPEED_RAMP_RATE  5   // Speed change per cycle (0-255)
+static int8_t currentLeftSpeed = 0;
+static int8_t currentRightSpeed = 0;
+
+/**
+ * Set motor speed and direction for single motor
+ * L9110S: IA = direction, IB = PWM speed
+ */
+void setMotor(uint8_t pwmPin, uint8_t dirPin, int8_t speed) {
+    // Clamp speed
+    speed = constrain(speed, -100, 100);
+    
+    if (speed >= 0) {
+        digitalWrite(dirPin, HIGH);  // Forward
+        ledcWrite(pwmPin, map(speed, 0, 100, 0, 255));
+    } else {
+        digitalWrite(dirPin, LOW);   // Reverse
+        ledcWrite(pwmPin, map(-speed, 0, 100, 0, 255));
+    }
+}
+
+/**
+ * Smooth speed change with ramping
+ * Prevents sudden motor movements
+ */
+void driveRamped(int8_t turn, uint8_t speed) {
+    // Calculate target speeds
+    int8_t targetLeft, targetRight;
+    
+    if (turn == 0) {
+        targetLeft = speed;
+        targetRight = speed;
+    } else if (turn > 0) {
+        targetRight = speed - (int8_t)((speed * turn) / 100);
+        targetLeft = speed;
+    } else {
+        targetLeft = speed + (int8_t)((speed * turn) / 100);
+        targetRight = speed;
+    }
+    
+    // Clamp targets
+    targetLeft = constrain(targetLeft, -100, 100);
+    targetRight = constrain(targetRight, -100, 100);
+    
+    // Ramp towards target (smooth change)
+    if (currentLeftSpeed < targetLeft) currentLeftSpeed = min(targetLeft, currentLeftSpeed + SPEED_RAMP_RATE);
+    if (currentLeftSpeed > targetLeft) currentLeftSpeed = max(targetLeft, currentLeftSpeed - SPEED_RAMP_RATE);
+    if (currentRightSpeed < targetRight) currentRightSpeed = min(targetRight, currentRightSpeed + SPEED_RAMP_RATE);
+    if (currentRightSpeed > targetRight) currentRightSpeed = max(targetRight, currentRightSpeed - SPEED_RAMP_RATE);
+    
+    // Apply to motors
+    setMotor(MOTOR_A_PWM, MOTOR_A_DIR, currentLeftSpeed);
+    setMotor(MOTOR_B_PWM, MOTOR_B_DIR, currentLeftSpeed);
+    setMotor(MOTOR_C_PWM, MOTOR_C_DIR, currentRightSpeed);
+    setMotor(MOTOR_D_PWM, MOTOR_D_DIR, currentRightSpeed);
+}
+
+/**
+ * Emergency stop - all motors off with ramp reset
+ */
+void estop() {
+    estopTriggered = true;
+    // Reset ramp speeds for clean restart
+    currentLeftSpeed = 0;
+    currentRightSpeed = 0;
+    // FIX C1: pins 4,5,6,15 are LEDC-managed — digitalWrite is ignored by PWM hardware.
+    // Must use ledcWrite(pin, 0) to actually silence the PWM output.
+    ledcWrite(MOTOR_A_PWM, 0);
+    ledcWrite(MOTOR_B_PWM, 0);
+    ledcWrite(MOTOR_C_PWM, 0);
+    ledcWrite(MOTOR_D_PWM, 0);
+    digitalWrite(MOTOR_A_DIR, LOW);
+    digitalWrite(MOTOR_B_DIR, LOW);
+    digitalWrite(MOTOR_C_DIR, LOW);
+    digitalWrite(MOTOR_D_DIR, LOW);
+}
+
+/**
+ * Differential drive control - uses ramping for smooth changes
+ * turn: -100 (left) to +100 (right)
+ * speed: 0-100 (forward)
+ */
+void drive(int8_t turn, uint8_t speed) {
+    // Apply low power mode reduction
+    if (lowPowerMode) {
+        speed = (uint8_t)((uint16_t)speed * 6 / 10);  // 60%
+    }
+    
+    // Use ramped version for smooth motor control
+    driveRamped(turn, speed);
+}
+
+// =============================================================================
+// COMMAND PARSING - FROM PI ZERO
+// =============================================================================
+
+/**
+ * Parse docking command from Pi Zero
+ * Non-blocking UART parsing with packet framing
+ */
+bool parseDockCommand(uint8_t byte, DockCommand* cmd) {
+    static uint8_t buffer[6];
+    static uint8_t index = 0;
+    static bool waitingForHeader = true;
+    
+    if (waitingForHeader) {
+        if (byte == 0xAA) {
+            buffer[0] = byte;
+            index = 1;
+            waitingForHeader = false;
+        }
+        return false;
+    }
+    
+    buffer[index++] = byte;
+    
+    if (index >= 6) {
+        // Full packet received
+        waitingForHeader = true;
+        
+        // Verify tail
+        if (buffer[5] != 0x55) {
+            return false;
+        }
+        
+        // Verify checksum
+        uint8_t checksum = buffer[1] ^ buffer[2] ^ buffer[3];
+        if (checksum != buffer[4]) {
+            return false;
+        }
+        
+        // Parse command
+        cmd->turn = (int8_t)buffer[1];
+        cmd->speed = buffer[2];
+        cmd->docked = buffer[3];
+        
+        return true;
+    }
+    
+    return false;
+}
+
+// =============================================================================
+// ULTRASONIC SENSOR - NON-BLOCKING IMPLEMENTATION
+// =============================================================================
+
+#define ULTRASONIC_MAX_DISTANCE_CM  400
+#define ULTRASONIC_TIMEOUT_US        30000  // 30ms - prevents 1s freeze on echo miss
+
+static struct {
+    uint8_t state;            // 0=idle, 1=triggering, 2=waiting_echo, 3=measuring
+    uint32_t triggerTime;
+    uint32_t echoStartTime;
+    float lastDistance;
+} ultrasonic = {0, 0, 0, 0, 999.0};
+
+/**
+ * Non-blocking ultrasonic read
+ * Call repeatedly from sensor task
+ * Returns last valid distance or 999.0 if no reading
+ */
+float readUltrasonic() {
+    uint32_t now = micros();
+    
+    switch (ultrasonic.state) {
+        case 0:  // Idle - trigger new reading
+            digitalWrite(ULTRASONIC_TRIG, HIGH);
+            ultrasonic.triggerTime = now;
+            ultrasonic.state = 1;
+            break;
+            
+        case 1:  // Wait for trigger pulse (10us)
+            if (now - ultrasonic.triggerTime >= 10) {
+                digitalWrite(ULTRASONIC_TRIG, LOW);
+                ultrasonic.state = 2;
+            }
+            break;
+            
+        case 2:  // Wait for echo start
+            if (digitalRead(ULTRASONIC_ECHO) == HIGH) {
+                ultrasonic.echoStartTime = now;
+                ultrasonic.state = 3;
+            } else if (now - ultrasonic.triggerTime > ULTRASONIC_TIMEOUT_US) {
+                // Timeout - no echo received
+                ultrasonic.state = 0;
+            }
+            break;
+            
+        case 3:  // Wait for echo end
+            if (digitalRead(ULTRASONIC_ECHO) == LOW) {
+                uint32_t echoDuration = now - ultrasonic.echoStartTime;
+                if (echoDuration < ULTRASONIC_TIMEOUT_US) {
+                    ultrasonic.lastDistance = (echoDuration * 0.0343) / 2.0;
+                    ultrasonic.lastDistance = constrain(ultrasonic.lastDistance, 0, ULTRASONIC_MAX_DISTANCE_CM);
+                }
+                ultrasonic.state = 0;
+            } else if (now - ultrasonic.echoStartTime > ULTRASONIC_TIMEOUT_US) {
+                // Echo timeout
+                ultrasonic.state = 0;
+            }
+            break;
+            
+        default:
+            ultrasonic.state = 0;
+            break;
+    }
+    
+    return ultrasonic.lastDistance;
+}
+
+// =============================================================================
+// ENVIRONMENTAL SENSORS - DS18B20 + LDR
+// =============================================================================
+
+// Note: These require OneWire library:
+// #include <OneWire.h>
+// #include <DallasTemperature.h>
+
+// DS18B20 requires 4.7kΩ pull-up resistor on ONEWIRE_PIN
+
+#define TEMP_RESOLUTION    12    // 12-bit resolution
+#define TEMP_CONVERSION_MS 750   // Conversion time for 12-bit
+#define LDR_SAMPLES        8      // Moving average for LDR
+
+// Environmental thresholds
+#define TEMP_FIRE_THRESHOLD   60.0   // °C - fire detected
+#define TEMP_LOW_WARNING      5.0    // °C - too cold
+#define LDR_DARK_THRESHOLD   800    // ADC value - too dark
+#define LDR_BRIGHT_THRESHOLD 200    // ADC value - bright (daytime)
+
+struct EnvSensor {
+    float temperature;      // DS18B20 reading
+    uint16_t lightLevel;  // LDR ADC value (0-4095)
+    bool tempValid;        // DS18B20 connected
+    bool lightValid;       // LDR connected
+    uint32_t lastTempRead;
+    uint32_t lastLdrRead;
+};
+
+static EnvSensor env = {
+    25.0,  // temperature
+    0,     // lightLevel
+    false,  // tempValid
+    false,  // lightValid
+    0,      // lastTempRead
+    0       // lastLdrRead
+};
+
+// OneWire and DallasTemperature objects (uncomment if libraries available)
+// static OneWire oneWire(ONEWIRE_PIN);
+// static DallasTemperature sensors(&oneWire);
+
+/**
+ * Initialize DS18B20 temperature sensor
+ * Call once at startup
+ */
+void initTemperatureSensor() {
+    // Uncomment for actual DS18B20:
+    // sensors.begin();
+    // sensors.setResolution(TEMP_RESOLUTION);
+    // sensors.requestTemperatures();
+    env.lastTempRead = millis();
+    env.tempValid = false;
+    Serial.println("TEMP: Sensor initialized (placeholder)");
+}
+
+/**
+ * Read DS18B20 temperature
+ * Non-blocking - returns last valid reading
+ * Call repeatedly
+ */
+float readTemperature() {
+    uint32_t now = millis();
+    
+    // Check if it's time to read (every 2 seconds)
+    if (now - env.lastTempRead >= 2000) {
+        // In production, use:
+        // float tempC = sensors.getTempCByIndex(0);
+        // if (tempC != DEVICE_DISCONNECTED_C) {
+        //     env.temperature = tempC;
+        //     env.tempValid = true;
+        // }
+        
+        // Placeholder: simulate temperature reading
+        // Replace with actual OneWire code above
+        env.lastTempRead = now;
+    }
+    
+    return env.temperature;
+}
+
+/**
+ * Initialize LDR light sensor
+ * Call once at startup
+ */
+void initLDR() {
+    pinMode(LDR_PIN, INPUT);
+    env.lightValid = false;
+    Serial.println("LDR: Sensor initialized");
+}
+
+/**
+ * Read LDR with moving average
+ * Returns ADC value (0 = dark, 4095 = bright)
+ */
+uint16_t readLDR() {
+    static uint16_t ldrBuffer[LDR_SAMPLES];
+    static uint8_t ldrIndex = 0;
+    static bool bufferFull = false;
+    
+    // Read ADC
+    uint16_t adcValue = analogRead(LDR_PIN);
+    
+    // Add to buffer
+    ldrBuffer[ldrIndex] = adcValue;
+    ldrIndex = (ldrIndex + 1) % LDR_SAMPLES;
+    if (ldrIndex == 0) bufferFull = true;
+    
+    // Calculate average
+    uint32_t sum = 0;
+    uint8_t count = bufferFull ? LDR_SAMPLES : ldrIndex;
+    for (uint8_t i = 0; i < count; i++) {
+        sum += ldrBuffer[i];
+    }
+    env.lightLevel = (count > 0) ? (sum / count) : adcValue;
+    env.lightValid = true;
+    
+    return env.lightLevel;
+}
+
+/**
+ * Get light level as percentage (0% = dark, 100% = bright)
+ */
+uint8_t getLightPercent() {
+    // Map ADC to percentage (inverted - lower ADC = darker)
+    // Adjust thresholds based on your LDR
+    if (env.lightLevel > LDR_DARK_THRESHOLD) return 0;
+    if (env.lightLevel < LDR_BRIGHT_THRESHOLD) return 100;
+    return map(env.lightLevel, LDR_DARK_THRESHOLD, LDR_BRIGHT_THRESHOLD, 0, 100);
+}
+
+/**
+ * Interlinked environmental check
+ * Returns combined hazard status based on temperature AND light
+ */
+enum EnvHazard {
+    ENV_OK = 0,
+    ENV_FIRE_RISK,      // High temperature
+    ENV_DARK_WARNING,    // Too dark (could indicate night/fire smoke)
+    ENV_TEMP_LOW        // Too cold
+};
+
+EnvHazard checkEnvironment() {
+    float temp = readTemperature();
+    uint16_t light = readLDR();
+    
+    // Check temperature first (fire risk)
+    if (temp >= TEMP_FIRE_THRESHOLD) {
+        return ENV_FIRE_RISK;
+    }
+    
+    // Check for darkness (could be smoke or night)
+    if (light > LDR_DARK_THRESHOLD) {
+        return ENV_DARK_WARNING;
+    }
+    
+    // Check for cold
+    if (temp < TEMP_LOW_WARNING) {
+        return ENV_TEMP_LOW;
+    }
+    
+    return ENV_OK;
+}
+
+/**
+ * Update all environmental sensors
+ * Call from sensor task
+ */
+void updateEnvironmentSensors() {
+    // Update temperature
+    float temp = readTemperature();
+    
+    // Update LDR
+    uint16_t light = readLDR();
+    
+    // Log if significant change
+    static float lastLoggedTemp = 0;
+    static uint16_t lastLoggedLight = 0;
+    
+    if (abs(temp - lastLoggedTemp) > 5.0 || abs((int)light - (int)lastLoggedLight) > 100) {
+        Serial.print("ENV: Temp=");
+        Serial.print(temp);
+        Serial.print("C Light=");
+        Serial.print(light);
+        Serial.print(" (");
+        Serial.print(getLightPercent());
+        Serial.println("%)");
+        lastLoggedTemp = temp;
+        lastLoggedLight = light;
+    }
+}
+
+// =============================================================================
+// BATTERY MONITORING - HARDENED for 2S Li-ion
+// =============================================================================
+
+#define VOLTAGE_SAMPLES 8        // Moving average samples
+#define LOW_BATTERY_VOLTAGE 6.2  // Absolute cutoff (not percentage)
+
+static float voltageBuffer[VOLTAGE_SAMPLES];
+static uint8_t voltageIndex = 0;
+static bool voltageBufferFull = false;
+
+/**
+ * Smoothed battery reading with moving average
+ */
+float getSmoothedVoltage() {
+    float sum = 0;
+    uint8_t count = voltageBufferFull ? VOLTAGE_SAMPLES : voltageIndex;
+    
+    for (uint8_t i = 0; i < count; i++) {
+        sum += voltageBuffer[i];
+    }
+    
+    return (count > 0) ? (sum / count) : 0;
+}
+
+void updateBattery() {
+    // Read raw ADC
+    int adcValue = analogRead(BATTERY_ADC);
+    float adcVoltage = (adcValue / 4095.0) * 3.3;
+    float rawVoltage = adcVoltage / 0.25;  // Voltage divider ratio
+    
+    // Add to moving average buffer
+    voltageBuffer[voltageIndex] = rawVoltage;
+    voltageIndex = (voltageIndex + 1) % VOLTAGE_SAMPLES;
+    if (voltageIndex == 0) voltageBufferFull = true;
+    
+    // Use smoothed voltage
+    batteryVoltage = getSmoothedVoltage();
+    
+    // Percentage: 6.0V = 0%, 8.4V = 100%
+    batteryPercent = ((batteryVoltage - 6.0) / 2.4) * 100.0;
+    batteryPercent = constrain(batteryPercent, 0, 100);
+    
+    // Dock detection via voltage rise
+    bool justDocked = detectDock(batteryVoltage);
+    
+    if (justDocked) {
+        onDockDetected();
+    } else if (!isDocked() && chargeStarted) {
+        onUndocked();
+    }
+    
+    // Enable low power mode
+    lowPowerMode = (batteryPercent < LOW_BATTERY_THRESHOLD);
+    
+    // Absolute voltage cutoff protection
+    if (batteryVoltage < LOW_BATTERY_VOLTAGE && currentState != STATE_DOCKED_CHARGING) {
+        // Force safe idle on critical low voltage
+        currentState = STATE_SAFE_IDLE;
+        currentSpeed = 0;
+        currentTurn = 0;
+        drive(0, 0);
+        Serial.println("BATTERY: CRITICAL LOW - shutdown");
+    }
+}
+
+// =============================================================================
+// STATE MACHINE LOGIC - HARDENED
+// =============================================================================
+
+// State transition guards
+#define STATE_MIN_TIME_MS      500     // Minimum time in state (except first entry)
+#define ALERT_CONFIRM_TIME_MS 2000    // Confirm alert before taking action
+
+/**
+ * Check transitions between states
+ * Event-driven, non-blocking, robust to sensor noise
+ * Includes guards against rapid state flapping
+ */
+void updateStateMachine() {
+    uint32_t currentTime = millis();
+    uint32_t timeInState = currentTime - stateEntryTime;
+    
+    // Guard: Ignore transitions if in state < minimum time
+    // Exception: Allow transition TO first state without delay
+    if (timeInState < STATE_MIN_TIME_MS && currentState != previousState) {
+        return;
+    }
+    
+    previousState = currentState;
+    
+    switch (currentState) {
+        case STATE_SAFE_IDLE:
+            // Stay idle until command received or docked
+            if (isDocked()) {
+                currentState = STATE_DOCKED_CHARGING;
+            } else if (dockingEnabled) {
+                currentState = STATE_DOCKING;
+            }
+            break;
+            
+        case STATE_PATROL:
+            // GPS STALE CHECK: Halt if no GPS fix AND past cold-start grace period.
+            // FIX I2: GPS cold start can take 30-90s outdoors. Without this grace
+            // window the rover halts immediately on every boot until a fix arrives.
+            #define GPS_STARTUP_GRACE_MS 90000
+            if (gpsFixAge > 5000 && millis() > GPS_STARTUP_GRACE_MS) {
+                currentSpeed = 0;
+                currentTurn = 0;
+                drive(0, 0);
+                Serial.println("GPS: No fix - SAFE_HALT");
+                break;
+            }
+            
+            // Transitions:
+            // Geofence violation takes priority - send alert
+            if (isGeofenceViolated() && !alertSent) {
+                currentState = STATE_RETURN_TO_BASE;
+                currentAlert = ALERT_GEOFENCE;
+                alertStartTime = currentTime;
+                sendGeofenceAlert();
+            }
+            // Hazard detection
+            else if (fireDetected || humanDetected || tiltDetected) {
+                currentState = STATE_ALERT;
+                alertStartTime = currentTime;
+                alertConfirmed = false;
+                // Determine alert type
+                if (fireDetected) currentAlert = ALERT_FIRE;
+                else if (tiltDetected) currentAlert = ALERT_EARTHQUAKE;
+                else currentAlert = ALERT_INTRUDER;
+            }
+            // Low battery
+            else if (batteryPercent < LOW_BATTERY_THRESHOLD) {
+                currentState = STATE_RETURN_TO_BASE;
+            }
+            // Manual docking
+            else if (dockingEnabled) {
+                currentState = STATE_DOCKING;
+            }
+            // Auto-dock detection
+            else if (isDocked()) {
+                currentState = STATE_DOCKED_CHARGING;
+            }
+            break;
+            
+        case STATE_ALERT:
+            // Send alert on first entry to alert state
+            if (currentTime - stateEntryTime < 1000) {
+                sendHazardAlert(currentAlert);
+            }
+            
+            // Sensor fusion: require BOTH temperature AND camera flag for fire
+            if (currentAlert == ALERT_FIRE) {
+                if (env.temperature > TEMP_FIRE_THRESHOLD && fireDetected) {
+                    alertConfirmed = true;
+                }
+            }
+            
+            // Timeout after 30 seconds if not confirmed
+            if (currentTime - alertStartTime > 30000) {
+                currentState = STATE_PATROL;
+                currentAlert = ALERT_NONE;
+                alertSent = false;
+            }
+            
+            // Can return to base if commanded
+            if (dockingEnabled) {
+                currentState = STATE_DOCKING;
+            }
+            break;
+            
+        case STATE_RETURN_TO_BASE:
+            // GPS STALE CHECK: same grace period as PATROL
+            if (gpsFixAge > 5000 && millis() > GPS_STARTUP_GRACE_MS) {
+                currentSpeed = 0;
+                currentTurn = 0;
+                drive(0, 0);
+                Serial.println("GPS: No fix - SAFE_HALT");
+                break;
+            }
+            
+            // Navigate toward base (using GPS - simplified)
+            if (dockingEnabled) {
+                currentState = STATE_DOCKING;
+            }
+            else if (isDocked()) {
+                currentState = STATE_DOCKED_CHARGING;
+            }
+            // Return to patrol if back within geofence (if not geofence alert)
+            else if (!isGeofenceViolated() && currentAlert != ALERT_GEOFENCE) {
+                currentState = STATE_PATROL;
+                currentAlert = ALERT_NONE;
+                alertSent = false;
+            }
+            // Also clear alert if manually reset
+            else if (currentAlert == ALERT_GEOFENCE && !isGeofenceViolated()) {
+                alertSent = false;
+            }
+            break;
+            
+        case STATE_DOCKING:
+            // Use commands from Pi Zero
+            if (isDocked() || (currentTime - lastCommandTime > COMMAND_TIMEOUT_MS)) {
+                currentState = STATE_DOCKED_CHARGING;
+                estop();
+            }
+            // Abort if undocked mid-docking
+            if (!isDocked() && !dockingEnabled) {
+                currentState = STATE_SAFE_IDLE;
+            }
+            break;
+            
+        case STATE_DOCKED_CHARGING:
+            // Charging state - stay here until undocked
+            if (!isDocked()) {
+                currentState = STATE_SAFE_IDLE;
+                alertSent = false;  // Reset alert flag on undock
+            }
+            // Manual undock command
+            if (!dockingEnabled && currentTime - stateEntryTime > 2000) {
+                // Require 2 seconds docked before allowing undock
+            }
+            break;
+    }
+    
+    // Update entry time on state change
+    if (currentState != previousState) {
+        stateEntryTime = millis();
+        Serial.print("State: ");
+        Serial.println(currentState);
+    }
+}
+
+/**
+ * Execute current state behavior
+ * Includes charging safety behavior when docked
+ */
+void executeState() {
+    uint32_t currentTime = millis();
+    
+    switch (currentState) {
+        case STATE_SAFE_IDLE:
+            // Full stop - minimal power
+            currentTurn = 0;
+            currentSpeed = 0;
+            drive(0, 0);
+            digitalWrite(STATUS_LED, (currentTime / 1000) % 2);  // Slow blink
+            break;
+            
+        case STATE_PATROL:
+            // Normal patrol behavior
+            currentTurn = 0;
+            currentSpeed = lowPowerMode ? 30 : 50;
+            digitalWrite(STATUS_LED, HIGH);
+            break;
+            
+        case STATE_ALERT:
+            // Move toward alert source, or stop and investigate
+            currentTurn = 0;
+            currentSpeed = 0;
+            // Alert buzzer pattern
+            if ((currentTime / 500) % 2 == 0) {
+                digitalWrite(BUZZER_PIN, HIGH);
+            } else {
+                digitalWrite(BUZZER_PIN, LOW);
+            }
+            digitalWrite(STATUS_LED, (currentTime / 200) % 2);  // Fast blink
+            break;
+            
+        case STATE_RETURN_TO_BASE:
+            // Navigate toward base coordinates
+            // Simplified: just go straight (GPS waypoint would go here)
+            currentTurn = 0;
+            currentSpeed = lowPowerMode ? 20 : 40;
+            digitalWrite(STATUS_LED, (currentTime / 500) % 2);  // Medium blink
+            break;
+            
+        case STATE_DOCKING:
+            // Use commands from Pi Zero via UART
+            // Check command timeout
+            if (currentTime - lastCommandTime > COMMAND_TIMEOUT_MS) {
+                // No recent command - STOP for safety
+                currentTurn = 0;
+                currentSpeed = 0;
+            }
+            // Otherwise use currentTurn and currentSpeed from UART
+            break;
+            
+        case STATE_DOCKED_CHARGING:
+            // CHARGING SAFETY: Immediately stop all motors
+            currentTurn = 0;
+            currentSpeed = 0;
+            drive(0, 0);
+            
+            // Reduced-power sensor mode - continue monitoring
+            // Keep critical monitoring active (battery, temp)
+            
+            // Log charge status periodically (non-blocking check)
+            static uint32_t lastChargeLog = 0;
+            if (currentTime - lastChargeLog > 10000) {
+                Serial.print("CHARGING: Voltage=");
+                Serial.print(batteryVoltage);
+                Serial.print("V, Started=");
+                Serial.println(hasChargingStarted() ? "YES" : "NO");
+                lastChargeLog = currentTime;
+            }
+            
+            // Check for charge complete - non-blocking beep
+            // FIX C3: removed 'static bool chargeBeepDone' here — it was shadowing
+            // the global chargeBeepDone, meaning onUndocked() could never reset it.
+            // Now uses the global directly, which onUndocked() correctly resets.
+            if (isChargingComplete(batteryVoltage) && !chargeBeepDone) {
+                // Queue beep - will be done by main loop
+                chargeBeepDone = true;
+            }
+            
+            // LED indication - solid when charging
+            digitalWrite(STATUS_LED, HIGH);
+            break;
+    }
+    
+    // Apply motor commands (except in DOCKING which uses UART commands directly)
+    if (currentState != STATE_DOCKING && currentState != STATE_DOCKED_CHARGING) {
+        drive(currentTurn, currentSpeed);
+    }
+}
+
+// =============================================================================
+// TASKS
+// =============================================================================
+
+/**
+ * UART receive task - from Pi Zero
+ * Handles both text commands and docking commands
+ */
+void uartTask(void* parameter) {
+    uint8_t buffer[1];
+    DockCommand cmd;
+    static String textCmd    = "";
+    static bool   binaryMode = false;  // FIX C7: track when we're mid-binary-packet
+
+    while (true) {
+        int length = uart_read_bytes(UART_NUM, buffer, 1, pdMS_TO_TICKS(10));
+        if (length > 0) {
+            char c = (char)buffer[0];
+
+            // Enter binary mode on header byte (only during docking)
+            if (buffer[0] == 0xAA && currentState == STATE_DOCKING) {
+                binaryMode = true;
+            }
+
+            if (binaryMode) {
+                // Feed ALL bytes to binary parser until packet complete or fails
+                if (parseDockCommand(buffer[0], &cmd)) {
+                    currentTurn     = cmd.turn;
+                    currentSpeed    = cmd.speed;
+                    lastCommandTime = millis();
+                    estopTriggered  = false;
+                    binaryMode      = false;  // packet complete
+                }
+                // parseDockCommand resets its own state on checksum fail
+                // binaryMode stays true until a valid packet completes
+            }
+            // Text command parsing (only when not in binary mode)
+            else if (c == '\n' || c == '\r') {
+                if (textCmd.length() > 0) {
+                    processCommand(textCmd);
+                    textCmd = "";
+                }
+            }
+            else if (c >= 32) {  // Printable characters
+                textCmd += c;
+                if (textCmd.length() >= 16) {
+                    textCmd = "";  // Reset if too long
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+// =============================================================================
+// GPS PARSING - NEO-6M NMEA sentences
+// =============================================================================
+
+String gpsBuffer = "";
+
+void parseGPSLine(String& line) {
+    // Look for GGA sentence (contains position data)
+    if (!line.startsWith("$GPGGA") && !line.startsWith("$GNGGA")) {
+        return;
+    }
+    
+    // Parse GGA: $GPGGA,time,lat,NS,lon,EW,quality,satellites,hdop,alt,M,geoid,M,...
+    int commas[15];
+    int commaCount = 0;
+    
+    for (int i = 0; i < line.length() && commaCount < 15; i++) {
+        if (line.charAt(i) == ',') {
+            commas[commaCount++] = i;
+        }
+    }
+    
+    if (commaCount < 9) return;
+    
+    // Check GPS quality (0 = no fix, 1 = GPS, 2 = DGPS)
+    int quality = line.substring(commas[5] + 1, commas[6]).toInt();
+    if (quality == 0) return;  // No valid fix
+    
+    // Parse latitude
+    String latStr = line.substring(commas[1] + 1, commas[2]);
+    String latDir = line.substring(commas[2] + 1, commas[3]);
+    if (latStr.length() > 0) {
+        float lat = latStr.toFloat();
+        // Convert DDMM.MMMM to degrees
+        int latDeg = lat / 100;
+        float latMin = lat - (latDeg * 100);
+        latitude = latDeg + (latMin / 60.0);
+        if (latDir == "S") latitude = -latitude;
+    }
+    
+    // Parse longitude
+    String lonStr = line.substring(commas[3] + 1, commas[4]);
+    String lonDir = line.substring(commas[4] + 1, commas[5]);
+    if (lonStr.length() > 0) {
+        float lon = lonStr.toFloat();
+        // Convert DDDMM.MMMM to degrees
+        int lonDeg = lon / 100;
+        float lonMin = lon - (lonDeg * 100);
+        longitude = lonDeg + (lonMin / 60.0);
+        if (lonDir == "W") longitude = -longitude;
+    }
+    
+    // Update geofence
+    gpsFixAge = 0;
+    updateGPS(latitude, longitude, 0);
+}
+
+/**
+ * GPS polling task - reads from Serial (GPS)
+ * Non-blocking NMEA parsing
+ */
+void gpsTask(void* parameter) {
+    uint32_t lastGPSUpdate = 0;
+    
+    while (true) {
+        // Read available GPS characters
+        while (Serial2.available()) {
+            char c = Serial2.read();
+            if (c == '\n' || c == '\r') {
+                if (gpsBuffer.length() > 0) {
+                    parseGPSLine(gpsBuffer);
+                    gpsBuffer = "";
+                    lastGPSUpdate = millis();
+                }
+            } else if (gpsBuffer.length() < 100) {
+                gpsBuffer += c;
+            }
+        }
+        
+        // Age the fix based on time since last valid update
+        if (lastGPSUpdate > 0) {
+            gpsFixAge = millis() - lastGPSUpdate;
+        } else {
+            gpsFixAge = 60000;  // No fix yet
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+/**
+ * Camera forwarding task
+ * Reads from Serial (camera) and forwards to Pi via UART1
+ */
+void cameraTask(void* parameter) {
+    while (true) {
+        if (Serial.available()) {
+            String line = Serial.readStringUntil('\n');
+            line.trim();
+            if (line.length() > 0) {
+                // Forward to Pi via UART
+                line += "\n";
+                uart_write_bytes(UART_NUM, line.c_str(), line.length());
+                // Also parse for hazard detection
+                if (line.startsWith("HAZARD:")) {
+                    String hazardType = line.substring(7);
+                    hazardType.trim();
+                    if (hazardType == "FIRE") fireDetected = true;
+                    else if (hazardType == "MOTION") humanDetected = true;
+                    else if (hazardType == "HUMAN") humanDetected = true;
+                    else if (hazardType == "CLEAR") {
+                        fireDetected = false;
+                        humanDetected = false;
+                    }
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/**
+ * Sensor polling task - non-critical sensors
+ */
+void sensorTask(void* parameter) {
+    while (true) {
+        // Read ultrasonic (now non-blocking)
+        distance = readUltrasonic();
+        
+        // Obstacle avoidance override - only in patrol/return states
+        if ((currentState == STATE_PATROL || currentState == STATE_RETURN_TO_BASE) 
+            && distance < 20.0 && currentSpeed > 20) {
+            // Slow down for obstacles - non-blocking
+            currentSpeed = 15;
+        }
+        
+        // Update environmental sensors (DS18B20 + LDR)
+        updateEnvironmentSensors();
+        
+        // Update battery and dock detection
+        updateBattery();
+        
+        // Update GSM (non-blocking)
+        updateGSM();
+        
+        // GPS is handled by gpsTask
+        
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+/**
+ * State machine task
+ */
+void stateTask(void* parameter) {
+    while (true) {
+        updateStateMachine();
+        executeState();
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+// =============================================================================
+// SETUP
+// =============================================================================
+
+void setup() {
+    Serial.begin(115200);
+    Serial.println("STASIS Rover Initializing...");
+    
+    // Configure motor pins
+    pinMode(MOTOR_A_PWM, OUTPUT);
+    pinMode(MOTOR_A_DIR, OUTPUT);
+    pinMode(MOTOR_B_PWM, OUTPUT);
+    pinMode(MOTOR_B_DIR, OUTPUT);
+    pinMode(MOTOR_C_PWM, OUTPUT);
+    pinMode(MOTOR_C_DIR, OUTPUT);
+    pinMode(MOTOR_D_PWM, OUTPUT);
+    pinMode(MOTOR_D_DIR, OUTPUT);
+    
+    // Configure PWM for motors (ESP32 Arduino Core 3.x API)
+    ledcAttach(MOTOR_A_PWM, PWM_FREQ, PWM_RESOLUTION);
+    ledcAttach(MOTOR_B_PWM, PWM_FREQ, PWM_RESOLUTION);
+    ledcAttach(MOTOR_C_PWM, PWM_FREQ, PWM_RESOLUTION);
+    ledcAttach(MOTOR_D_PWM, PWM_FREQ, PWM_RESOLUTION);
+    
+    // Configure ultrasonic
+    pinMode(ULTRASONIC_TRIG, OUTPUT);
+    pinMode(ULTRASONIC_ECHO, INPUT);
+    
+    // Initialize environmental sensors (DS18B20 + LDR)
+    initTemperatureSensor();
+    initLDR();
+    
+    // Configure buzzer and status LED
+    pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(STATUS_LED, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(STATUS_LED, LOW);
+    
+    // Configure UART for Pi Zero
+    uart_config_t uart_config = {
+        .baud_rate = UART_BAUD,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
+    };
+    uart_param_config(UART_NUM, &uart_config);
+    uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(UART_NUM, 1024, 1024, 0, NULL, 0);
+    
+    // Configure Serial2 for GPS (NEO-6M)
+    // GPS uses 9600 baud typically
+    Serial2.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    
+    // Initialize ADC for battery
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);  // Allow up to ~3.3V input
+    
+    // Initialize dock detection baseline
+    dockState.baselineStable = false;
+    dockState.sampleCount = 0;
+    dockState.isDocked = false;
+    dockState.wasDocked = false;
+    dockState.dockStartTime = 0;
+    dockState.undockStartTime = 0;
+    dockState.baselineVoltage = 0;
+    
+    // Initialize geofence
+    geofence.homeSet = false;
+    geofence.violated = false;
+    geofence.lastValidFix = 0;
+    
+    // Initialize GSM (non-blocking, will be ready after warmup)
+    // initGSM();  // Uncomment when SIM800 wired
+    
+    // Create tasks
+    // FIX I3: 2048-byte stacks overflow with String allocations in sensorTask/gpsTask.
+    xTaskCreatePinnedToCore(uartTask,   "UART",    3072, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(cameraTask, "Camera",  3072, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(sensorTask, "Sensors", 4096, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(gpsTask,    "GPS",     3072, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(stateTask,  "State",   3072, NULL, 1, NULL, 1);
+    
+    lastCommandTime = millis();
+    stateEntryTime = millis();
+    
+    Serial.println("STASIS Rover Ready");
+    Serial.println("States: SAFE_IDLE, PATROL, ALERT, RETURN_TO_BASE, DOCKING, DOCKED_CHARGING");
+}
+
+// =============================================================================
+// MAIN LOOP
+// =============================================================================
+
+void loop() {
+    // Main loop - most work done in tasks
+    // Periodic safety check
+    if (estopTriggered) {
+        estop();
+    }
+    
+    // Watchdog reset
+    // esp_task_wdt_reset();
+    
+    delay(10);
+}

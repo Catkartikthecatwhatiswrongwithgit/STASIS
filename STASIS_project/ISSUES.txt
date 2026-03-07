@@ -1,0 +1,144 @@
+================================================================================
+STASIS ROVER - KNOWN ISSUES & RISKS
+================================================================================
+
+This document lists known issues, potential risks, and areas requiring attention
+in the STASIS rover firmware.
+
+================================================================================
+1. MINOR ISSUES (Low Priority)
+================================================================================
+
+1.1 Global Variables Not Volatile
+----------------------------------
+Issue: latitude, longitude, currentState, batteryVoltage, distance are used 
+       across FreeRTOS tasks but not declared volatile.
+Risk: LOW - On ESP32, float reads/writes are atomic. Compiler may optimize
+      but unlikely to cause issues in short demos.
+Fix: Add 'volatile' prefix if desired:
+     volatile float latitude;
+     volatile float longitude;
+     volatile RoverState currentState;
+
+1.2 String Class in GPS Parsing
+-------------------------------
+Issue: Uses String class (gpsBuffer) which can fragment heap over time.
+Risk: LOW - Buffer is limited to 100 chars and reused. Unlikely to cause
+      problems in typical demo duration.
+Fix: Use fixed char array if needed.
+
+1.3 delay(100) in safeSendSMS
+-----------------------------
+Issue: Still uses delay(100) for SIM800 rail stabilization.
+Risk: NONE - This is intentional - SIM800 needs stable power before sending.
+      Only runs during SMS, not during normal operation.
+
+================================================================================
+2. CONFIGURATION CONSTANTS (May Need Tuning)
+================================================================================
+
+2.1 Ultrasonic Timeout
+---------------------
+#define ULTRASONIC_TIMEOUT_US 30000  // 30ms
+Note: Current setting prevents 1-second freeze. May need adjustment if
+      max distance requirements change.
+
+2.2 Dock Detection
+-----------------
+#define DOCK_VOLTAGE_RISE    0.4    // 0.4V above baseline
+#define DOCK_CONFIRM_TIME_MS 2000   // 2 seconds
+#define DOCK_DEBOUNCE_FRAMES 20     // 20 frames
+
+Note: These values are tuned for 2S Li-ion (7.4V nominal). If using different
+battery chemistry, adjust DOCK_VOLTAGE_RISE accordingly.
+
+2.3 GPS Geofence
+----------------
+#define GEOFENCE_RADIUS_M 50.0    // 50 meter radius
+#define GPS_VALID_AGE_MS 10000    // 10 seconds
+
+Note: Adjust GEOFENCE_RADIUS_M based on actual demo area size.
+
+2.4 SMS Cooldown
+---------------
+#define SMS_COOLDOWN_MS 60000  // 60 seconds
+
+Note: Prevents SMS spam. May want to reduce for testing.
+
+================================================================================
+3. HARDWARE-SPECIFIC NOTES
+================================================================================
+
+3.1 Pin Assignments
+------------------
+Verify all pin definitions match actual wiring:
+- Motor pins: 2,4,5,6,7,15,16,18
+- Ultrasonic: 9,10
+- GPS: 8,19
+- Battery ADC: 1
+- Buzzer: 14
+- Status LED: 45
+- UART to Pi: 43,44
+
+3.2 Voltage Divider
+------------------
+Battery ADC assumes 30k+10k divider (ratio 0.25).
+Formula: batteryVoltage = adcVoltage / 0.25
+
+If using different divider, adjust this value.
+
+3.3 SIM800 Power
+---------------
+SIM800 requires separate ~4V high-current rail.
+DO NOT power from ESP32 3.3V rail - will brownout.
+
+================================================================================
+4. BEHAVIOR NOTES
+================================================================================
+
+4.1 First-Time Startup Behavior
+-------------------------------
+- Dock detection requires ~1 second to establish baseline
+- GPS requires 30-60 seconds for first fix (cold start)
+- GSM requires 10-30 seconds for network registration
+
+4.2 State Machine Guards
+----------------------
+- STATE_MIN_TIME_MS = 500ms prevents rapid state flapping
+- First state transition has no delay (previousState = currentState at init)
+
+4.3 Motor Ramping
+----------------
+- SPEED_RAMP_RATE = 5 per cycle (50ms)
+- Smooth acceleration/deceleration to prevent voltage spikes
+
+4.4 GPS Dead Zone Behavior
+-------------------------
+- If GPS fix older than 5 seconds, rover enters SAFE_HALT
+- Motors stop immediately
+- Must wait for valid GPS before resuming patrol
+
+================================================================================
+5. TESTING RECOMMENDATIONS
+================================================================================
+
+Before Demo:
+1. Test dock detection with actual charging voltage
+2. Verify GPS gets fix outdoors (not indoor)
+3. Test SIM800 SMS send (with working SIM)
+4. Test emergency stop (ESTOP command)
+5. Verify motor direction wiring
+6. Test geofence breach behavior
+
+================================================================================
+6. KNOWN LIMITATIONS
+================================================================================
+
+- No WiFi/ESP-NOW in core safety loop (as designed)
+- No current sensing on motors (stall detection not implemented)
+- Temperature sensor is placeholder (no actual DS18B20 code)
+- No automatic home position save to EEPROM
+
+================================================================================
+END OF DOCUMENT
+================================================================================

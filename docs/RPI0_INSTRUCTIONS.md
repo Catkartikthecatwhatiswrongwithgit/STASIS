@@ -1,109 +1,86 @@
-# Raspberry Pi Zero - Base Station Setup Instructions
+# Raspberry Pi Zero — Base Station Setup
 
 ## Overview
 
-This guide sets up the Raspberry Pi Zero to:
-- Automatically run the station monitor Python script on power-up
-- Connect to the ESP32-C3 via UART for rover communication
-- Serve the web dashboard and REST API
-- Operate in headless mode (no monitor/keyboard required)
+The Pi Zero runs `station_monitor.py`, which handles:
+- Reading JSON telemetry from the ESP32-C3 bridge over UART
+- Serving the REST API and web dashboard on port 5000
+- Storing telemetry in a SQLite database
+- Generating PDF mission reports when the rover docks
+- Running the AprilTag visual docking control loop
 
 ---
 
-## Hardware Requirements
+## OS Setup
 
-### Components
-- Raspberry Pi Zero (any version: Pi Zero, Pi Zero W, or Pi Zero 2 W)
-- MicroSD Card (8GB minimum, 16GB recommended)
-- 5V Power Supply (2.5A recommended)
-- ESP32-C3 (connected via UART)
+### 1. Flash Raspberry Pi OS Lite
 
-### Optional
-- USB to TTL adapter (for initial headless setup)
-- HDMI adapter and monitor (for debugging)
+Use **Raspberry Pi Imager** (https://www.raspberrypi.com/software/):
 
----
+- OS: **Raspberry Pi OS Lite (32-bit)**
+- Click the gear icon before writing to pre-configure:
+  - Hostname: `stasis-base`
+  - Enable SSH: Yes
+  - Username / password: `pi` / `sentinel2024`
+  - Locale: your timezone
 
-## Operating System Setup
-
-### Step 1: Download Raspberry Pi OS
-
-Download **Raspberry Pi OS Lite** (no desktop environment needed):
-- URL: https://www.raspberrypi.com/software/operating-systems/
-- Choose: **Raspberry Pi OS Lite (64-bit or 32-bit)**
-
-### Step 2: Flash the SD Card
-
-Use **Raspberry Pi Imager**:
-
-1. Download from: https://www.raspberrypi.com/software/
-2. Insert SD card into computer
-3. Open Raspberry Pi Imager
-4. Select OS: **Raspberry Pi OS (other)** → **Raspberry Pi OS Lite**
-5. Select your SD card
-6. Click the **gear icon** (Advanced options):
-   - Set hostname: `stasis-base`
-   - Enable SSH: **Yes**
-   - Set username/password: `pi` / `sentinel2024`
-   - Configure wireless LAN: (optional, for internet access)
-   - Set locale settings: Your timezone
-7. Click **Save** then **Write**
-
-### Step 3: Enable Serial Port
+### 2. Enable the serial port (disable serial console)
 
 ```bash
 sudo raspi-config
-```
-
-Navigate to:
-1. **Interface Options** → **Serial Port**
-2. Login shell on serial: **No**
-3. Serial port hardware enabled: **Yes**
-4. Reboot when prompted
-
----
-
-## Install Required Packages
-
-### Step 1: Install Python Dependencies
-
-```bash
-sudo apt install -y python3-pip python3-venv
-sudo pip3 install flask flask-cors flask-socketio pyserial fpdf2 eventlet
-```
-
-### Step 2: Copy Station Monitor Script
-
-```bash
-mkdir -p ~/Stasis
-cd ~/Stasis
-scp -r base_station pi@stasis-base.local:~/Stasis/
+# Interface Options → Serial Port
+#   Login shell over serial: No
+#   Serial port hardware enabled: Yes
+# Reboot
 ```
 
 ---
 
-## Auto-Start Configuration
+## Install Dependencies
 
-### systemd Service (Recommended)
+```bash
+sudo apt update
+sudo apt install -y python3-pip
 
-Create a systemd service:
+# Core station monitor
+pip install flask flask-cors flask-socketio pyserial fpdf2 eventlet
+
+# AprilTag docking (optional but recommended)
+pip install pupil-apriltags opencv-python-headless
+
+# Cache Leaflet maps for offline use (run once with internet access)
+mkdir -p ~/stasis/static
+wget -O ~/stasis/static/leaflet.css https://unpkg.com/leaflet@1.9.4/dist/leaflet.css
+wget -O ~/stasis/static/leaflet.js  https://unpkg.com/leaflet@1.9.4/dist/leaflet.js
+```
+
+---
+
+## Copy the Project
+
+```bash
+# From your computer (replace with actual path)
+scp -r STASIS/ pi@stasis-base.local:~/stasis/
+```
+
+---
+
+## Auto-Start with systemd
 
 ```bash
 sudo nano /etc/systemd/system/stasis.service
 ```
 
-Add:
-
 ```ini
 [Unit]
-Description=Stasis Base Station Monitor
-After=network.target serial-getty@serial0.service
+Description=STASIS Base Station Monitor
+After=network.target
 
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/Stasis
-ExecStart=/usr/bin/python3 /home/pi/Stasis/base_station/station_monitor.py
+WorkingDirectory=/home/pi/stasis
+ExecStart=/usr/bin/python3 /home/pi/stasis/base_station/station_monitor.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -113,138 +90,100 @@ Environment="SERIAL_PORT=/dev/serial0"
 Environment="BAUD_RATE=115200"
 Environment="FLASK_HOST=0.0.0.0"
 Environment="FLASK_PORT=5000"
+Environment="CAM_STREAM_URL=http://192.168.4.1:81/stream"
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Enable:
-
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable stasis.service
-sudo systemctl start stasis.service
+sudo systemctl enable stasis
+sudo systemctl start stasis
 ```
 
 ---
 
-## Wiring: ESP32-C3 to Raspberry Pi Zero
+## Wiring (ESP32-C3 → Pi Zero)
 
 | ESP32-C3 | Raspberry Pi Zero | Function |
 |----------|------------------|----------|
-| GPIO 21 (TX) | Pin 10 (GPIO 15 RXD) | UART TX → RX |
-| GPIO 20 (RX) | Pin 8 (GPIO 14 TXD) | UART RX ← TX |
-| 5V | Pin 2 or 4 (5V) | Power |
-| GND | Pin 6 (GND) | Common Ground |
+| GPIO 21 (TX) | Pin 10 (GPIO 15 / RXD) | UART data to Pi |
+| GPIO 20 (RX) | Pin 8 (GPIO 14 / TXD) | UART data from Pi |
+| 5V | Pin 2 (5V) | Power from Pi |
+| GND | Pin 6 (GND) | Common ground |
+
+> Only the bottom row of the Pi GPIO header is used (even-numbered pins: 2, 4, 6, 8, 10).
 
 ---
 
-## Testing the Setup
+## Testing
 
-### Test 1: Check Serial Communication
+### Verify serial comms
 
 ```bash
 sudo apt install minicom
 minicom -D /dev/serial0 -b 115200
+# Should see JSON telemetry lines scrolling
+# Press Ctrl+A then X to exit
 ```
 
-You should see telemetry JSON from ESP32-C3. Press Ctrl+A then X to exit.
-
-### Test 2: Check Flask API
+### Verify the API
 
 ```bash
-# Public endpoint (no auth required)
-curl http://stasis-base.local:5000/api/health
+# Public health check
+curl http://localhost:5000/api/health
 
-# Authenticated endpoints (default key: stasis-2024)
-curl -H "X-API-Key: stasis-2024" http://stasis-base.local:5000/api/status
+# Authenticated status
+curl -H "X-API-Key: stasis-2024" http://localhost:5000/api/status
 ```
 
-### Test 3: Access Web Dashboard
+### Access the dashboard
 
-Open browser:
+Connect to the `Stasis-Base` WiFi AP, then open:
 ```
-http://stasis-base.local:5000/stasis_app/index.html
+http://192.168.4.1:5000/stasis_app/index.html
+```
+
+### Check service logs
+
+```bash
+journalctl -u stasis -f
+```
+
+### Send a test command
+
+```bash
+curl -X POST http://localhost:5000/api/command \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: stasis-2024" \
+  -d '{"cmd": "STOP"}'
 ```
 
 ---
 
-## API Usage
+## Boot Sequence
 
-### Send Command to Rover
-
-```bash
-curl -X POST http://stasis-base.local:5000/api/command \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: stasis-2024" \
-  -d '{"cmd":"PATROL"}'
-```
-
-Available commands: STOP, FORWARD, BACKWARD, LEFT, RIGHT, PATROL, HOME, DOCKING, RESEARCH, RESET
-
-### Get Telemetry
-
-```bash
-curl http://stasis-base.local:5000/api/status \
-  -H "X-API-Key: stasis-2024"
-```
-
-### Get Alerts
-
-```bash
-curl http://stasis-base.local:5000/api/alerts \
-  -H "X-API-Key: stasis-2024"
-```
+1. Pi OS boots (~30–60 s)
+2. `stasis.service` starts automatically
+3. Serial listener thread opens `/dev/serial0`
+4. Flask API starts on `0.0.0.0:5000`
+5. AprilTag thread starts (waits for `STATE_DOCKING` telemetry)
+6. Dashboard is accessible from any device on `Stasis-Base` WiFi
 
 ---
 
 ## Troubleshooting
 
-### Serial Port Not Found
-
-```bash
-ls -la /dev/serial0
-# Should show: /dev/serial0 -> ttyAMA0
-```
-
-### Service Not Starting
-
-```bash
-journalctl -u stasis.service -n 50
-python3 -m py_compile ~/Stasis/base_station/station_monitor.py
-```
-
-### Permission Denied
-
-```bash
-sudo usermod -a -G dialout pi
-# Logout and login again
-```
+| Problem | Fix |
+|---------|-----|
+| `/dev/serial0` not found | Run `raspi-config` → Interface Options → Serial Port → disable login shell, enable hardware |
+| Permission denied on serial | `sudo usermod -a -G dialout pi` then logout/login |
+| Service not starting | `journalctl -u stasis -n 50` to see the error |
+| AprilTag thread disabled | `pip install pupil-apriltags opencv-python-headless` |
+| Camera stream not opening | Check `CAM_STREAM_URL` in service env; verify ESP32-CAM is on AP |
+| Dashboard map broken | Run the Leaflet cache `wget` commands (needs internet once) |
 
 ---
 
-## Power-On Behavior
-
-1. **Boot** (30-60 seconds) - Raspberry Pi OS loads
-2. **Service Start** - stasis.service starts automatically
-3. **Normal Operation**:
-   - Listens for telemetry from ESP32-C3
-   - Serves REST API on port 5000
-   - Stores data in SQLite database
-   - Generates PDF/TXT reports when rover docks
-   - WebSocket for real-time updates
-
----
-
-## Next Steps
-
-After setting up the Raspberry Pi Zero:
-1. Verify ESP32-C3 connection with `minicom`
-2. Flash the [ESP32-C3 bridge](./ESP32-C3_INSTRUCTIONS.md)
-3. Flash the [ESP32-S3 rover](./ESP32-S3_INSTRUCTIONS.md)
-4. Test end-to-end communication
-
----
-
-*Document Version: 2.0*  
-*Last Updated: February 2026*
+*Last updated: March 2026 — v2*
