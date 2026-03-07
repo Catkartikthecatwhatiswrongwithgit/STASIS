@@ -115,6 +115,35 @@ enum AlertType {
 };
 
 // =============================================================================
+// GLOBAL STATE — shared across FreeRTOS tasks
+// FIX C5: These were used throughout but never declared, causing compile errors.
+// =============================================================================
+volatile RoverState currentState    = STATE_SAFE_IDLE;
+volatile RoverState previousState   = STATE_SAFE_IDLE;
+volatile AlertType  currentAlert    = ALERT_NONE;
+volatile bool       estopTriggered  = false;
+volatile bool       dockingEnabled  = false;
+volatile bool       lowPowerMode    = false;
+volatile bool       fireDetected    = false;
+volatile bool       humanDetected   = false;
+volatile bool       tiltDetected    = false;
+volatile bool       alertSent       = false;
+volatile bool       alertConfirmed  = false;
+volatile int8_t     currentTurn     = 0;
+volatile uint8_t    currentSpeed    = 0;
+volatile float      latitude        = 0.0f;
+volatile float      longitude       = 0.0f;
+volatile float      batteryVoltage  = 0.0f;
+volatile float      batteryPercent  = 0.0f;
+volatile float      distance        = 999.0f;
+volatile uint32_t   gpsFixAge       = 60000;
+volatile uint32_t   lastCommandTime = 0;
+volatile uint32_t   stateEntryTime  = 0;
+volatile uint32_t   alertStartTime  = 0;
+
+#define LOW_BATTERY_THRESHOLD  20   // percent — triggers low power mode and return-to-base
+
+// =============================================================================
 // DOCK DETECTION MODULE - Robust battery voltage rise detection
 // =============================================================================
 // Approach: Compare current voltage to baseline, detect sustained rise
@@ -445,19 +474,21 @@ bool updateGSM() {
             gsm.initStartTime = now;
             gsm.retryCount = 0;
             Serial.println("GSM: Starting init...");
-            Serial2.begin(9600);
+            // FIX C4: Serial2 is used by GPS (NEO-6M on pins 8,19).
+            // SIM800L (pins 12,13) MUST use Serial1 to avoid corrupting GPS stream.
+            Serial1.begin(9600, SERIAL_8N1, SIM800_RX, SIM800_TX);
             break;
             
         case GSM_INIT:
             // Wait for AT response
             if (now - gsm.initStartTime > 2000) {
-                Serial2.println("AT");
+                Serial1.println("AT");
                 gsm.initStartTime = now;
             }
-            if (Serial2.available()) {
+            if (Serial1.available()) {
                 String response = "";
-                while (Serial2.available()) {
-                    response += (char)Serial2.read();
+                while (Serial1.available()) {
+                    response += (char)Serial1.read();
                 }
                 if (response.indexOf("OK") >= 0) {
                     gsm.status = GSM_SEARCHING;
@@ -475,13 +506,13 @@ bool updateGSM() {
         case GSM_SEARCHING:
             // Wait for network registration
             if (now - gsm.initStartTime > 1000) {
-                Serial2.println("AT+CREG?");
+                Serial1.println("AT+CREG?");
                 gsm.initStartTime = now;
             }
-            if (Serial2.available()) {
+            if (Serial1.available()) {
                 String response = "";
-                while (Serial2.available()) {
-                    response += (char)Serial2.read();
+                while (Serial1.available()) {
+                    response += (char)Serial1.read();
                 }
                 // CREG: 1 = Registered, home, 5 = Registered, roaming
                 if (response.indexOf(",1") >= 0 || response.indexOf(",5") >= 0) {
@@ -526,16 +557,16 @@ bool sendSMS_Hardened(const char* message) {
     
     // If we have a pending message being sent
     if (pendingMessage != NULL) {
-        if (Serial2.available()) {
+        if (Serial1.available()) {
             String response = "";
-            while (Serial2.available()) {
-                response += (char)Serial2.read();
+            while (Serial1.available()) {
+                response += (char)Serial1.read();
             }
             
             if (response.indexOf(">") >= 0) {
                 // Ready for message body
-                Serial2.print(pendingMessage);
-                Serial2.write(26);  // Ctrl+Z
+                Serial1.print(pendingMessage);
+                Serial1.write(26);  // Ctrl+Z
                 retryStartTime = millis();
             }
             else if (response.indexOf("OK") >= 0) {
@@ -566,9 +597,9 @@ bool sendSMS_Hardened(const char* message) {
     // Start new SMS
     if (gsm.retryCount < SMS_RETRY_MAX) {
         pendingMessage = message;
-        Serial2.print("AT+CMGS=\"");
-        Serial2.print(gsm.phoneNumber);
-        Serial2.println("\"");
+        Serial1.print("AT+CMGS=\"");
+        Serial1.print(gsm.phoneNumber);
+        Serial1.println("\"");
         retryStartTime = millis();
     }
     
@@ -673,8 +704,8 @@ void processCommand(String cmd) {
     }
     else if (cmd == "BACKWARD") {
         currentTurn = 0;
-        currentSpeed = 50;
-        drive(0, 0);
+        currentSpeed = -50;  // FIX C2: negative speed = reverse in setMotor logic
+        if (currentState == STATE_SAFE_IDLE) currentState = STATE_PATROL;
     }
     else if (cmd == "LEFT") {
         currentTurn = -50;
@@ -806,10 +837,12 @@ void estop() {
     // Reset ramp speeds for clean restart
     currentLeftSpeed = 0;
     currentRightSpeed = 0;
-    digitalWrite(MOTOR_A_PWM, LOW);
-    digitalWrite(MOTOR_B_PWM, LOW);
-    digitalWrite(MOTOR_C_PWM, LOW);
-    digitalWrite(MOTOR_D_PWM, LOW);
+    // FIX C1: pins 4,5,6,15 are LEDC-managed — digitalWrite is ignored by PWM hardware.
+    // Must use ledcWrite(pin, 0) to actually silence the PWM output.
+    ledcWrite(MOTOR_A_PWM, 0);
+    ledcWrite(MOTOR_B_PWM, 0);
+    ledcWrite(MOTOR_C_PWM, 0);
+    ledcWrite(MOTOR_D_PWM, 0);
     digitalWrite(MOTOR_A_DIR, LOW);
     digitalWrite(MOTOR_B_DIR, LOW);
     digitalWrite(MOTOR_C_DIR, LOW);
@@ -1243,8 +1276,11 @@ void updateStateMachine() {
             break;
             
         case STATE_PATROL:
-            // GPS STALE CHECK: Halt if no GPS for 5 seconds
-            if (gpsFixAge > 5000) {
+            // GPS STALE CHECK: Halt if no GPS fix AND past cold-start grace period.
+            // FIX I2: GPS cold start can take 30-90s outdoors. Without this grace
+            // window the rover halts immediately on every boot until a fix arrives.
+            #define GPS_STARTUP_GRACE_MS 90000
+            if (gpsFixAge > 5000 && millis() > GPS_STARTUP_GRACE_MS) {
                 currentSpeed = 0;
                 currentTurn = 0;
                 drive(0, 0);
@@ -1311,8 +1347,8 @@ void updateStateMachine() {
             break;
             
         case STATE_RETURN_TO_BASE:
-            // GPS STALE CHECK: Halt if no GPS for 5 seconds
-            if (gpsFixAge > 5000) {
+            // GPS STALE CHECK: same grace period as PATROL
+            if (gpsFixAge > 5000 && millis() > GPS_STARTUP_GRACE_MS) {
                 currentSpeed = 0;
                 currentTurn = 0;
                 drive(0, 0);
@@ -1447,7 +1483,9 @@ void executeState() {
             }
             
             // Check for charge complete - non-blocking beep
-            static bool chargeBeepDone = false;
+            // FIX C3: removed 'static bool chargeBeepDone' here — it was shadowing
+            // the global chargeBeepDone, meaning onUndocked() could never reset it.
+            // Now uses the global directly, which onUndocked() correctly resets.
             if (isChargingComplete(batteryVoltage) && !chargeBeepDone) {
                 // Queue beep - will be done by main loop
                 chargeBeepDone = true;
@@ -1475,23 +1513,32 @@ void executeState() {
 void uartTask(void* parameter) {
     uint8_t buffer[1];
     DockCommand cmd;
-    static String textCmd = "";
-    
+    static String textCmd    = "";
+    static bool   binaryMode = false;  // FIX C7: track when we're mid-binary-packet
+
     while (true) {
         int length = uart_read_bytes(UART_NUM, buffer, 1, pdMS_TO_TICKS(10));
         if (length > 0) {
             char c = (char)buffer[0];
-            
-            // Check for docking protocol (starts with 0xAA)
-            if (c == 0xAA && currentState == STATE_DOCKING) {
-                if (parseDockCommand(buffer[0], &cmd)) {
-                    currentTurn = cmd.turn;
-                    currentSpeed = cmd.speed;
-                    lastCommandTime = millis();
-                    estopTriggered = false;
-                }
+
+            // Enter binary mode on header byte (only during docking)
+            if (buffer[0] == 0xAA && currentState == STATE_DOCKING) {
+                binaryMode = true;
             }
-            // Text command parsing
+
+            if (binaryMode) {
+                // Feed ALL bytes to binary parser until packet complete or fails
+                if (parseDockCommand(buffer[0], &cmd)) {
+                    currentTurn     = cmd.turn;
+                    currentSpeed    = cmd.speed;
+                    lastCommandTime = millis();
+                    estopTriggered  = false;
+                    binaryMode      = false;  // packet complete
+                }
+                // parseDockCommand resets its own state on checksum fail
+                // binaryMode stays true until a valid packet completes
+            }
+            // Text command parsing (only when not in binary mode)
             else if (c == '\n' || c == '\r') {
                 if (textCmd.length() > 0) {
                     processCommand(textCmd);
@@ -1747,11 +1794,12 @@ void setup() {
     // initGSM();  // Uncomment when SIM800 wired
     
     // Create tasks
-    xTaskCreatePinnedToCore(uartTask, "UART", 2048, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(cameraTask, "Camera", 2048, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(sensorTask, "Sensors", 2048, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(gpsTask, "GPS", 2048, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(stateTask, "State", 2048, NULL, 1, NULL, 1);
+    // FIX I3: 2048-byte stacks overflow with String allocations in sensorTask/gpsTask.
+    xTaskCreatePinnedToCore(uartTask,   "UART",    3072, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(cameraTask, "Camera",  3072, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(sensorTask, "Sensors", 4096, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(gpsTask,    "GPS",     3072, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(stateTask,  "State",   3072, NULL, 1, NULL, 1);
     
     lastCommandTime = millis();
     stateEntryTime = millis();

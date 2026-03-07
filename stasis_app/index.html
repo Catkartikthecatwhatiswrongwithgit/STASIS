@@ -1,574 +1,1068 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>STASIS - Forest Monitor</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STASIS — Rover Command Center</title>
+
+    <!--
+    ═══════════════════════════════════════════════════════════════
+    DEPLOYMENT NOTE FOR Pi ZERO (Stasis-Base isolated AP)
+    ═══════════════════════════════════════════════════════════════
+    The ESP32-C3 creates a WiFi AP "Stasis-Base" (192.168.4.1)
+    with NO internet access. The Pi Zero runs Flask at e.g.
+    http://192.168.4.2:5000.
+
+    KEY FIXES vs old version:
+      1. socket.io.js loaded from /socket.io/socket.io.js (relative)
+         Flask-SocketIO serves this AUTOMATICALLY — no internet needed.
+         The old new WebSocket() approach was INCOMPATIBLE with Flask-SocketIO.
+
+      2. Leaflet loaded DYNAMICALLY with 3s CDN timeout then local fallback.
+         Maps degrade gracefully if offline — NO more "L is not defined".
+
+      3. All L.* calls are inside the loadLeaflet() callback, guaranteeing
+         Leaflet is defined before any map code runs.
+
+    To cache Leaflet for offline use (run once with internet):
+      wget -O /home/pi/stasis/static/leaflet.css https://unpkg.com/leaflet@1.9.4/dist/leaflet.css
+      wget -O /home/pi/stasis/static/leaflet.js  https://unpkg.com/leaflet@1.9.4/dist/leaflet.js
+    Flask serves /static/ automatically.
+    ═══════════════════════════════════════════════════════════════
+    -->
+
+    <link id="leafletCSS" rel="stylesheet"
+          href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          onerror="this.href='/static/leaflet.css'">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;600;700;800&display=swap"
+          rel="stylesheet" onerror="document.documentElement.style.setProperty('--font-ui','monospace')">
+
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
         :root {
-            --bg-dark: #0a0e14;
-            --bg-card: #161b22;
-            --bg-sidebar: #0d1117;
-            --border: #30363d;
-            --primary: #58a6ff;
-            --success: #3fb950;
-            --danger: #f85149;
-            --warning: #d29922;
-            --text: #c9d1d9;
-            --text-muted: #8b949e;
+            --bg:#090c10; --surface:#0f1419; --card:#141a22; --border:#1e2730;
+            --accent:#00e5a0; --accent2:#00cfff; --warn:#ffb347; --danger:#ff4757;
+            --muted:#4a5568; --text:#c8d6e5; --dim:#637080;
+            --font-ui:'Syne',sans-serif; --font-mono:'JetBrains Mono',monospace;
+            --r:10px;
         }
-        
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-            background: var(--bg-dark); 
-            color: var(--text); 
-            height: 100vh; 
-            overflow: hidden; 
-        }
-        
-        .app { display: flex; height: 100vh; }
-        
-        /* Sidebar */
-        .sidebar { 
-            width: 220px; 
-            background: var(--bg-sidebar); 
-            border-right: 1px solid var(--border);
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .logo { 
-            padding: 20px; 
-            font-size: 24px; 
-            font-weight: bold; 
-            color: var(--primary);
-            border-bottom: 1px solid var(--border);
-        }
-        .logo i { margin-right: 10px; }
-        
-        .nav { flex: 1; padding: 10px 0; }
-        .nav-item { 
-            display: flex; 
-            align-items: center; 
-            padding: 12px 20px; 
-            color: var(--text-muted); 
-            cursor: pointer;
-            transition: 0.2s;
-        }
-        .nav-item:hover { background: rgba(255,255,255,0.05); color: var(--text); }
-        .nav-item.active { background: rgba(88,166,255,0.1); color: var(--primary); border-left: 3px solid var(--primary); }
-        .nav-item i { width: 25px; margin-right: 10px; }
-        
-        /* Main */
-        .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-        
-        .header { 
-            background: var(--bg-sidebar); 
-            padding: 15px 20px; 
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .header h1 { font-size: 18px; font-weight: 500; }
-        
-        .status { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-        .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
-        .dot.on { background: var(--success); }
-        
-        .content { flex: 1; padding: 20px; overflow: auto; }
-        
-        /* Pages */
-        .page { display: none; }
-        .page.active { display: block; }
-        
-        /* Dashboard Grid */
-        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-        
-        .card { 
-            background: var(--bg-card); 
-            border-radius: 8px; 
-            padding: 20px; 
-            border: 1px solid var(--border);
-        }
-        
-        .card h3 { 
-            color: var(--text); 
-            font-size: 14px; 
-            margin-bottom: 15px; 
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .card h3 i { color: var(--primary); }
-        
-        .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        .stat .label { font-size: 11px; color: var(--text-muted); }
-        .stat .value { font-size: 18px; font-weight: 600; }
-        
-        .btns { display: flex; gap: 10px; margin-top: 15px; }
-        .btn { 
-            padding: 10px 18px; 
-            border: none; 
-            border-radius: 6px; 
-            cursor: pointer; 
-            font-size: 14px;
-            font-weight: 500;
-            transition: 0.2s;
-        }
-        .btn-stop { background: var(--danger); color: #fff; }
-        .btn-stop:hover { background: #d73a3a; }
-        .btn-play { background: var(--success); color: #fff; }
-        .btn-play:hover { background: #2ea043; }
-        .btn-primary { background: var(--primary); color: #fff; }
-        .btn-primary:hover { background: #4090e0; }
-        
-        /* Login Modal */
-        .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.9);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 9999;
-        }
-        .modal-overlay.hidden { display: none; }
-        .modal-box {
-            background: var(--bg-card);
-            padding: 40px;
-            border-radius: 12px;
-            width: 350px;
-            text-align: center;
-            border: 1px solid var(--border);
-        }
-        .modal-box h2 { color: var(--primary); margin-bottom: 10px; }
-        .modal-box p { color: var(--text-muted); margin-bottom: 20px; font-size: 13px; }
-        .modal-box input {
-            width: 100%;
-            padding: 12px;
-            margin-bottom: 15px;
-            background: var(--bg-dark);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            color: var(--text);
-            font-size: 14px;
-        }
-        .modal-box input:focus { outline: none; border-color: var(--primary); }
-        
-        /* Maps */
-        #map, #miniMap, #fencingMap { 
-            height: 100%; 
-            background: #000; 
-            border-radius: 8px; 
-            min-height: 300px;
-        }
-        
-        .map-container { height: calc(100vh - 120px); }
-        
-        .map-wrap { height: 100%; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
-        
-        /* Fence Controls */
-        .fence-controls { 
-            margin-bottom: 15px; 
-            display: flex;
-            gap: 10px;
-        }
-        
-        /* Chat */
-        .chat-container { 
-            display: flex; 
-            height: calc(100vh - 120px); 
-            background: var(--bg-card); 
-            border-radius: 8px; 
-            overflow: hidden;
-        }
-        
-        .chat-sidebar { 
-            width: 180px; 
-            background: var(--bg-sidebar); 
-            padding: 15px;
-            border-right: 1px solid var(--border);
-        }
-        .chat-sidebar h4 { 
-            color: var(--text-muted); 
-            font-size: 11px; 
-            text-transform: uppercase; 
-            margin-bottom: 10px;
-        }
-        .channel { 
-            padding: 8px 12px; 
-            border-radius: 4px; 
-            color: var(--text-muted); 
-            cursor: pointer;
-            font-size: 13px;
-        }
-        .channel:hover, .channel.active { 
-            background: rgba(88,166,255,0.1); 
-            color: var(--primary); 
-        }
-        
-        .chat-main { flex: 1; display: flex; flex-direction: column; }
-        
-        .chat-messages { 
-            flex: 1; 
-            padding: 15px; 
-            overflow-y: auto;
-        }
-        .msg { margin-bottom: 12px; }
-        .msg-header { display: flex; gap: 10px; margin-bottom: 4px; }
-        .msg-user { color: var(--primary); font-weight: 500; font-size: 13px; }
-        .msg-time { color: var(--text-muted); font-size: 11px; }
-        .msg-text { color: var(--text-muted); font-size: 14px; }
-        
-        .chat-input { 
-            padding: 15px; 
-            border-top: 1px solid var(--border);
-            display: flex;
-            gap: 10px;
-        }
-        .chat-input input { 
-            flex: 1; 
-            padding: 10px 15px; 
-            background: var(--bg-dark); 
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            color: var(--text);
-            font-size: 14px;
-        }
-        .chat-input input:focus { outline: none; border-color: var(--primary); }
-        
-        /* Stream */
-        .stream-container { 
-            height: calc(100vh - 120px); 
-            background: #000; 
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-muted);
-        }
-        .stream-container i { font-size: 64px; margin-bottom: 15px; }
-        
-        /* Responsive */
-        @media (max-width: 768px) {
-            .grid { grid-template-columns: 1fr; }
-        }
+        *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+        html,body{height:100%;overflow:hidden}
+        body{font-family:var(--font-ui);background:var(--bg);color:var(--text);display:flex}
+
+        /* SIDEBAR */
+        .sidebar{width:58px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:3px;flex-shrink:0;z-index:20}
+        .sb-logo{width:34px;height:34px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:#000;letter-spacing:-1px;margin-bottom:16px;flex-shrink:0}
+        .sb-btn{width:38px;height:38px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--muted);cursor:pointer;transition:all .15s;position:relative;border:none;background:transparent;padding:0}
+        .sb-btn svg{width:17px;height:17px;fill:currentColor;pointer-events:none}
+        .sb-btn:hover{background:var(--card);color:var(--text)}
+        .sb-btn.active{background:rgba(0,229,160,.12);color:var(--accent)}
+        .sb-btn .tip{position:absolute;left:48px;top:50%;transform:translateY(-50%);background:var(--card);border:1px solid var(--border);padding:4px 10px;border-radius:6px;font-size:11px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s;z-index:100;font-family:var(--font-mono)}
+        .sb-btn:hover .tip{opacity:1}
+        .sb-spacer{flex:1}
+
+        /* MAIN */
+        .main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+
+        /* TOPBAR */
+        .topbar{height:48px;flex-shrink:0;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:12px}
+        .ptitle{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+        .tbr{margin-left:auto;display:flex;align-items:center;gap:10px}
+        .sim-tag{font-size:10px;font-family:var(--font-mono);background:rgba(255,179,71,.12);color:var(--warn);border:1px solid rgba(255,179,71,.3);padding:2px 7px;border-radius:4px;letter-spacing:.08em}
+        .cp{display:flex;align-items:center;gap:5px;font-size:11px;font-family:var(--font-mono);color:var(--dim)}
+        .cdot{width:7px;height:7px;border-radius:50%;background:var(--danger);transition:background .3s}
+        .cdot.on{background:var(--accent);box-shadow:0 0 5px rgba(0,229,160,.5)}
+        .uchip{display:flex;align-items:center;gap:7px;cursor:pointer;padding:3px 8px;border-radius:7px;transition:background .15s}
+        .uchip:hover{background:var(--card)}
+        .uav{width:24px;height:24px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#000;flex-shrink:0}
+        .uname{font-size:12px;font-weight:600}
+
+        /* CONTENT */
+        .content{flex:1;overflow:auto;padding:16px}
+        .view{display:none;height:100%}
+        .view.active{display:block}
+
+        /* PANEL */
+        .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:15px}
+        .ph{display:flex;align-items:center;gap:7px;margin-bottom:12px;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+        .ph svg{width:13px;height:13px;fill:var(--accent)}
+
+        /* DASHBOARD */
+        .dg{display:grid;grid-template-columns:1fr 1fr 1fr 290px;grid-template-rows:auto auto;gap:12px}
+        .c3{grid-column:1/4}
+        .r2{grid-row:1/3}
+
+        /* STATS */
+        .s2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+        .st{display:flex;flex-direction:column;gap:3px}
+        .sl{font-size:10px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;font-family:var(--font-mono)}
+        .sv{font-size:22px;font-weight:700;font-family:var(--font-mono);line-height:1}
+        .su{font-size:11px;color:var(--dim)}
+        .ok{color:var(--accent)}.warn{color:var(--warn)}.err{color:var(--danger)}
+        .bb{height:5px;background:var(--border);border-radius:3px;margin-top:7px;overflow:hidden}
+        .bf{height:100%;border-radius:3px;background:var(--accent);transition:width .8s,background .3s}
+
+        /* STATE BADGE */
+        .sbadge{display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border-radius:6px;font-size:11px;font-family:var(--font-mono);font-weight:600;letter-spacing:.06em;border:1px solid;margin-bottom:12px}
+        .sIDLE{background:rgba(100,116,139,.12);color:#94a3b8;border-color:rgba(100,116,139,.25)}
+        .sPATROL{background:rgba(0,229,160,.1);color:var(--accent);border-color:rgba(0,229,160,.3)}
+        .sALERT{background:rgba(255,71,87,.1);color:var(--danger);border-color:rgba(255,71,87,.3)}
+        .sRETURNING{background:rgba(255,179,71,.1);color:var(--warn);border-color:rgba(255,179,71,.3)}
+        .sDOCKING{background:rgba(0,207,255,.1);color:var(--accent2);border-color:rgba(0,207,255,.3)}
+        .sCHARGING{background:rgba(0,229,160,.15);color:#6ee7b7;border-color:rgba(0,229,160,.4)}
+
+        /* CONTROLS */
+        .cg{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}
+        .cb{padding:10px 5px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text);font-size:11px;font-weight:600;font-family:var(--font-ui);cursor:pointer;transition:all .15s;display:flex;flex-direction:column;align-items:center;gap:4px;letter-spacing:.04em}
+        .cb svg{width:14px;height:14px;fill:currentColor}
+        .cb:hover{border-color:var(--accent);color:var(--accent);background:rgba(0,229,160,.06)}
+        .cb.stop-cb{border-color:rgba(255,71,87,.35);color:var(--danger)}
+        .cb.stop-cb:hover{background:rgba(255,71,87,.1)}
+        .cb:active{transform:scale(.97)}
+
+        /* LOG */
+        .loglist{display:flex;flex-direction:column;gap:4px;max-height:120px;overflow-y:auto}
+        .lr{display:flex;align-items:baseline;gap:7px;font-size:11px;font-family:var(--font-mono);padding:5px 8px;background:var(--surface);border-radius:5px;border-left:3px solid var(--border)}
+        .lr.ok{border-left-color:var(--accent)}.lr.warn{border-left-color:var(--warn)}.lr.err{border-left-color:var(--danger)}
+        .lt{color:var(--dim);flex-shrink:0;font-size:10px}.lm{color:var(--text);word-break:break-all}
+
+        /* MAP */
+        .mwrap{width:100%;height:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;position:relative}
+        #miniMap{width:100%;height:195px;border-radius:7px}
+        #mainMap,#fencingMap{width:100%;height:100%}
+        .map-offline{display:flex;align-items:center;justify-content:center;height:195px;flex-direction:column;gap:7px;color:var(--muted);font-size:12px;text-align:center}
+        .movl{position:absolute;top:10px;right:10px;z-index:500;display:flex;flex-direction:column;gap:5px}
+        .mpill{background:rgba(9,12,16,.88);border:1px solid var(--border);border-radius:7px;padding:5px 11px;font-size:11px;font-family:var(--font-mono);backdrop-filter:blur(8px);color:var(--text)}
+        .mpill b{color:var(--accent);font-weight:500}
+
+        /* STREAM */
+        .strlayout{display:grid;grid-template-columns:1fr 250px;gap:12px;height:100%}
+        .strscreen{background:#000;border:1px solid var(--border);border-radius:var(--r);display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+        .stroff{text-align:center;color:var(--dim)}
+        .stroff svg{width:44px;height:44px;fill:var(--muted);margin-bottom:9px}
+        .drow{display:flex;align-items:center;gap:9px;padding:9px 11px;background:var(--surface);border-radius:7px;border:1px solid var(--border);font-size:12px}
+        .ddot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:all .3s}
+        .ddot.fire{background:#ff6b35;box-shadow:0 0 6px #ff6b35}
+        .ddot.motion{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+        .ddot.human{background:var(--accent2);box-shadow:0 0 6px var(--accent2)}
+        .dconf{font-size:10px;font-family:var(--font-mono);color:var(--dim);margin-left:auto}
+
+        /* FENCING */
+        .flay{display:flex;flex-direction:column;gap:9px;height:100%}
+        .fbar{display:flex;align-items:center;gap:7px;flex-shrink:0}
+        .finfo{margin-left:auto;font-size:11px;font-family:var(--font-mono);color:var(--dim)}
+        .fmapwrap{flex:1;border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+
+        /* CHAT */
+        .chatlay{display:grid;grid-template-columns:170px 1fr 165px;gap:0;height:100%;border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+        .chsb{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column}
+        .chhd{padding:13px 13px 7px;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+        .chlist{flex:1;padding:0 7px 7px;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+        .chitem{padding:7px 9px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--dim);transition:all .15s;display:flex;align-items:center;gap:7px}
+        .chitem:hover{background:rgba(255,255,255,.04);color:var(--text)}
+        .chitem.active{background:rgba(0,229,160,.1);color:var(--accent)}
+        .chhash{font-size:13px;font-weight:700;opacity:.5}
+        .chbadge{margin-left:auto;background:var(--danger);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;font-family:var(--font-mono)}
+        .chatmain{display:flex;flex-direction:column;background:var(--card)}
+        .chatmsgs{flex:1;padding:12px;overflow-y:auto;display:flex;flex-direction:column;gap:7px;min-height:0}
+        .mgrp{display:flex;flex-direction:column;gap:2px}
+        .mhdr{display:flex;align-items:baseline;gap:7px;margin-bottom:2px}
+        .muser{font-size:13px;font-weight:700}
+        .mtime{font-size:10px;color:var(--dim);font-family:var(--font-mono)}
+        .mbody{font-size:13px;color:var(--text);line-height:1.5;padding-left:2px}
+        .msys{font-size:11px;color:var(--dim);font-style:italic;text-align:center;padding:3px 0}
+        .chatinrow{padding:10px;border-top:1px solid var(--border);display:flex;gap:7px;flex-shrink:0}
+        #chatInput{flex:1;padding:9px 12px;background:var(--surface);border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:13px;font-family:var(--font-ui)}
+        #chatInput:focus{outline:none;border-color:var(--accent)}
+        .usrsb{background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column}
+        .usrhd{padding:13px 13px 7px;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+        .usrlist{flex:1;padding:0 9px 9px;overflow-y:auto;display:flex;flex-direction:column;gap:3px}
+        .urow{display:flex;align-items:center;gap:7px;padding:4px 5px;border-radius:5px;font-size:12px}
+        .udot{width:7px;height:7px;border-radius:50%;background:var(--accent);flex-shrink:0}
+
+        /* ALERTS */
+        .alist{display:flex;flex-direction:column;gap:9px}
+        .acard{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px;display:flex;align-items:flex-start;gap:10px;border-left:3px solid var(--border)}
+        .acard.hazard{border-left-color:var(--danger)}.acard.warning{border-left-color:var(--warn)}.acard.info{border-left-color:var(--accent)}
+        .aico{font-size:15px;margin-top:2px;width:17px;text-align:center}
+        .aico.hazard{color:var(--danger)}.aico.warning{color:var(--warn)}.aico.info{color:var(--accent)}
+        .abody .at{font-size:13px;font-weight:600;margin-bottom:2px}
+        .abody .am{font-size:12px;color:var(--dim)}
+        .abody .as{font-size:10px;font-family:var(--font-mono);color:var(--muted);margin-top:4px}
+        .nodata{text-align:center;padding:45px 20px;color:var(--muted);font-size:13px}
+
+        /* SETTINGS */
+        .sgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+        .srow{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border)}
+        .srow:last-child{border-bottom:none}
+        .slbl{font-size:11px;color:var(--dim)}.stxt{font-size:13px;margin-bottom:2px}
+        .sinput{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:5px 9px;color:var(--text);font-size:12px;font-family:var(--font-mono);width:175px}
+        .sinput:focus{outline:none;border-color:var(--accent)}
+        .chip{display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;background:rgba(0,229,160,.1);border:1px solid rgba(0,229,160,.2);font-size:10px;font-family:var(--font-mono);color:var(--accent)}
+        kbd{display:inline-flex;align-items:center;padding:2px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;font-size:10px;font-family:var(--font-mono);color:var(--dim)}
+
+        /* BUTTONS */
+        .btn{padding:7px 13px;border:none;border-radius:7px;font-size:12px;font-weight:600;font-family:var(--font-ui);cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:5px;letter-spacing:.04em}
+        .btn svg{width:12px;height:12px;fill:currentColor}
+        .bta{background:var(--accent);color:#000}.bta:hover{background:#00ffb3}
+        .btg{background:var(--surface);color:var(--text);border:1px solid var(--border)}.btg:hover{border-color:var(--accent);color:var(--accent)}
+        .btd{background:rgba(255,71,87,.12);color:var(--danger);border:1px solid rgba(255,71,87,.3)}.btd:hover{background:rgba(255,71,87,.22)}
+        .btn:active{transform:scale(.97)}
+
+        /* TOAST */
+        #toasts{position:fixed;bottom:16px;right:16px;z-index:99999;display:flex;flex-direction:column;gap:6px;pointer-events:none}
+        .toast{padding:10px 14px;border-radius:9px;border:1px solid;font-size:12px;max-width:265px;animation:tIn .2s ease;backdrop-filter:blur(12px);background:rgba(9,12,16,.95);pointer-events:all}
+        .toast b{display:block;font-size:13px;margin-bottom:2px}
+        .toast.info,.toast.success{border-color:var(--accent)}
+        .toast.error{border-color:var(--danger)}.toast.warning{border-color:var(--warn)}
+        @keyframes tIn{from{transform:translateX(14px);opacity:0}to{transform:none;opacity:1}}
+
+        /* LOGIN */
+        .mbg{position:fixed;inset:0;background:rgba(5,8,12,.96);display:flex;align-items:center;justify-content:center;z-index:9999}
+        .mbg.hidden{display:none}
+        .mbox{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:34px;width:310px;text-align:center}
+        .mlogo{width:46px;height:46px;background:var(--accent);border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;color:#000;margin:0 auto 16px}
+        .mbox h2{font-size:19px;margin-bottom:5px}.mbox p{font-size:12px;color:var(--dim);margin-bottom:20px}
+        .minput{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:10px 12px;color:var(--text);font-size:14px;font-family:var(--font-ui);margin-bottom:9px}
+        .minput:focus{outline:none;border-color:var(--accent)}
+
+        /* SCROLLBAR */
+        ::-webkit-scrollbar{width:4px}
+        ::-webkit-scrollbar-track{background:transparent}
+        ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+        /* RESPONSIVE */
+        @media(max-width:1050px){.dg{grid-template-columns:1fr 1fr}.c3{grid-column:auto}.r2{grid-row:auto}.strlayout{grid-template-columns:1fr}.sgrid{grid-template-columns:1fr}.chatlay{grid-template-columns:1fr}.chsb,.usrsb{display:none}}
+        @media(max-width:680px){.dg{grid-template-columns:1fr}.cg{grid-template-columns:1fr 1fr}}
     </style>
 </head>
 <body>
-    <div class="app">
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="logo"><i class="fas fa-leaf"></i>STASIS</div>
-            <div class="nav">
-                <div class="nav-item active" onclick="showPage('dashboard', this)">
-                    <i class="fas fa-tachometer-alt"></i>Dashboard
-                </div>
-                <div class="nav-item" onclick="showPage('map', this)">
-                    <i class="fas fa-map"></i>Map
-                </div>
-                <div class="nav-item" onclick="showPage('stream', this)">
-                    <i class="fas fa-video"></i>Stream
-                </div>
-                <div class="nav-item" onclick="showPage('chat', this)">
-                    <i class="fas fa-comments"></i>Chat
-                </div>
-                <div class="nav-item" onclick="showPage('fencing', this)">
-                    <i class="fas fa-draw-polygon"></i>Fencing
-                </div>
-            </div>
-        </div>
-        
-        <!-- Main -->
-        <div class="main">
-            <div class="header">
-                <h1 id="pageTitle">Dashboard</h1>
-                <div class="status">
-                    <div class="dot" id="statusDot"></div>
-                    <span id="statusText">Offline</span>
-                </div>
-            </div>
-            
-            <div class="content">
-                <!-- Dashboard -->
-                <div class="page active" id="page-dashboard">
-                    <div class="grid">
-                        <div class="card">
-                            <h3><i class="fas fa-robot"></i>Rover Status</h3>
-                            <div class="stats">
-                                <div class="stat"><div class="label">State</div><div class="value" id="roverState">IDLE</div></div>
-                                <div class="stat"><div class="label">Battery</div><div class="value" id="roverBattery">75%</div></div>
-                                <div class="stat"><div class="label">Temp</div><div class="value" id="roverTemp">25°C</div></div>
-                                <div class="stat"><div class="label">Distance</div><div class="value" id="roverDistance">100cm</div></div>
-                            </div>
-                        </div>
-                        <div class="card">
-                            <h3><i class="fas fa-map-marker-alt"></i>Location</h3>
-                            <div id="miniMap"></div>
-                        </div>
-                        <div class="card">
-                            <h3><i class="fas fa-gamepad"></i>Controls</h3>
-                            <div class="btns">
-                                <button class="btn btn-stop" onclick="sendCmd('STOP')">Stop</button>
-                                <button class="btn btn-play" onclick="sendCmd('PATROL')">Patrol</button>
-                                <button class="btn btn-primary" onclick="sendCmd('HOME')">Home</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Map -->
-                <div class="page" id="page-map">
-                    <div class="map-container">
-                        <div class="map-wrap">
-                            <div id="map"></div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Stream -->
-                <div class="page" id="page-stream">
-                    <div class="stream-container">
-                        <div style="text-align:center;">
-                            <i class="fas fa-video-slash"></i>
-                            <p>Camera stream unavailable</p>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Chat -->
-                <div class="page" id="page-chat">
-                    <div class="chat-container">
-                        <div class="chat-sidebar">
-                            <h4>Channels</h4>
-                            <div class="channel active">#general</div>
-                            <div class="channel">#alerts</div>
-                            <div class="channel">#patrol</div>
-                        </div>
-                        <div class="chat-main">
-                            <div class="chat-messages" id="chatMessages">
-                                <div class="msg">
-                                    <div class="msg-header">
-                                        <span class="msg-user">System</span>
-                                        <span class="msg-time">Now</span>
-                                    </div>
-                                    <div class="msg-text">Welcome to STASIS Chat!</div>
-                                </div>
-                            </div>
-                            <div class="chat-input">
-                                <input type="text" id="chatInput" placeholder="Type a message..." onkeypress="if(event.key==='Enter')sendChat()">
-                                <button class="btn btn-primary" onclick="sendChat()">Send</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Fencing -->
-                <div class="page" id="page-fencing">
-                    <div class="fence-controls">
-                        <button class="btn btn-primary" onclick="toggleFence()">Draw Area</button>
-                        <button class="btn btn-stop" onclick="clearFence()">Clear</button>
-                        <button class="btn btn-play" onclick="saveFence()">Save</button>
-                    </div>
-                    <div class="map-container">
-                        <div class="map-wrap">
-                            <div id="fencingMap"></div>
-                        </div>
-                    </div>
-                </div>
+
+<!-- SIDEBAR -->
+<nav class="sidebar">
+    <div class="sb-logo">ST</div>
+    <button class="sb-btn active" onclick="nav('dashboard',this)"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg><span class="tip">Dashboard</span></button>
+    <button class="sb-btn" onclick="nav('map',this)"><svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg><span class="tip">Live Map</span></button>
+    <button class="sb-btn" onclick="nav('stream',this)"><svg viewBox="0 0 24 24"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg><span class="tip">Camera Stream</span></button>
+    <button class="sb-btn" onclick="nav('fencing',this)"><svg viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg><span class="tip">Geofencing</span></button>
+    <button class="sb-btn" id="chatNavBtn" onclick="nav('chat',this)"><svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg><span class="tip">Team Chat</span></button>
+    <button class="sb-btn" onclick="nav('alerts',this)"><svg viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg><span class="tip">Alerts</span></button>
+    <div class="sb-spacer"></div>
+    <button class="sb-btn" onclick="nav('settings',this)"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg><span class="tip">Settings</span></button>
+    <button class="sb-btn" onclick="doLogout()"><svg viewBox="0 0 24 24"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg><span class="tip">Logout</span></button>
+</nav>
+
+<!-- MAIN -->
+<div class="main">
+    <div class="topbar">
+        <span class="ptitle" id="ptitle">Dashboard</span>
+        <div class="tbr">
+            <span class="sim-tag" id="simTag" style="display:none">SIMULATED</span>
+            <div class="cp"><div class="cdot" id="cdot"></div><span id="ctext">Offline</span></div>
+            <div class="uchip" onclick="doLogout()">
+                <div class="uav" id="uav">G</div>
+                <span class="uname" id="uname">Guest</span>
             </div>
         </div>
     </div>
-    
-    <!-- Login Modal -->
-    <div class="modal-overlay hidden" id="loginModal">
-        <div class="modal-box">
-            <h2><i class="fas fa-leaf"></i> STASIS</h2>
-            <p>Enter your name to continue</p>
-            <input type="text" id="loginName" placeholder="Your name" onkeypress="if(event.key==='Enter')doLogin()">
-            <button class="btn btn-primary" style="width:100%" onclick="doLogin()">Enter</button>
+
+    <div class="content">
+
+        <!-- DASHBOARD -->
+        <div class="view active" id="dashboardView">
+            <div class="dg">
+                <div class="panel">
+                    <div class="ph"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>Rover Status</div>
+                    <div id="sbadge" class="sbadge sIDLE">● IDLE</div>
+                    <div class="s2">
+                        <div class="st"><div class="sl">Battery</div><div class="sv ok" id="dBat">—</div><div class="bb"><div class="bf" id="batFill" style="width:0%"></div></div></div>
+                        <div class="st"><div class="sl">Temp</div><div class="sv" id="dTemp">—</div><div class="su">°C</div></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="ph"><svg viewBox="0 0 24 24"><path d="M13.49 5.48c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm-3.6 13.9l1-4.4 2.1 2v6h2v-7.5l-2.1-2 .6-3c1.3 1.5 3.3 2.5 5.5 2.5v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1l-5.2 2.2v4.7h2v-3.4l1.8-.7-1.6 8.1-4.9-1-.4 2 7 1.4z"/></svg>Motion</div>
+                    <div class="s2">
+                        <div class="st"><div class="sl">Speed</div><div class="sv ok" id="dSpd">—</div><div class="su">km/h</div></div>
+                        <div class="st"><div class="sl">Heading</div><div class="sv" id="dHdg">—</div><div class="su">°</div></div>
+                    </div>
+                    <div class="s2" style="margin-top:10px">
+                        <div class="st"><div class="sl">Distance</div><div class="sv" id="dDst">—</div><div class="su">cm</div></div>
+                        <div class="st"><div class="sl">Packets</div><div class="sv" id="dPkt">0</div></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="ph"><svg viewBox="0 0 24 24"><path d="M15 7.5V2H9v5.5l3 3 3-3zM7.5 9H2v6h5.5l3-3-3-3zM9 16.5V22h6v-5.5l-3-3-3 3zM16.5 9l-3 3 3 3H22V9h-5.5z"/></svg>Controls</div>
+                    <div class="cg">
+                        <button class="cb stop-cb" onclick="sendCmd('STOP')"><svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>Stop</button>
+                        <button class="cb" onclick="sendCmd('PATROL')"><svg viewBox="0 0 24 24"><path d="M13.5 5.5c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zM9.8 8.9L7 23h2.1l1.8-8 2.1 2v6h2v-7.5l-2.1-2 .6-3C14.8 12 16.8 13 19 13v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1L6 8.3V13h2V9.6l1.8-.7"/></svg>Patrol</button>
+                        <button class="cb" onclick="sendCmd('HOME')"><svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>Home</button>
+                        <button class="cb" onclick="sendCmd('DOCKING')"><svg viewBox="0 0 24 24"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>Dock</button>
+                        <button class="cb" onclick="sendCmd('RESET')"><svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>Reset</button>
+                        <button class="cb" onclick="nav('chat')"><svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>Chat</button>
+                    </div>
+                </div>
+                <!-- Position panel (spans 2 rows) -->
+                <div class="panel r2">
+                    <div class="ph"><svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>Position</div>
+                    <div id="miniMap"></div>
+                    <div style="margin-top:9px;font-family:var(--font-mono);font-size:11px;color:var(--dim);line-height:1.9">
+                        LAT&nbsp;<span style="color:var(--text)" id="dLat">—</span><br>
+                        LNG&nbsp;<span style="color:var(--text)" id="dLng">—</span>
+                    </div>
+                </div>
+                <!-- Activity Log -->
+                <div class="panel c3">
+                    <div class="ph"><svg viewBox="0 0 24 24"><path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z"/></svg>Activity Log</div>
+                    <div class="loglist" id="loglist">
+                        <div class="lr ok"><span class="lt" id="initTime">--:--:--</span><span class="lm">STASIS monitor ready. Waiting for connection...</span></div>
+                    </div>
+                </div>
+            </div>
         </div>
+
+        <!-- MAP -->
+        <div class="view" id="mapView" style="height:calc(100vh - 80px)">
+            <div class="mwrap" style="height:100%">
+                <div id="mainMap"></div>
+                <div class="movl">
+                    <div class="mpill">LAT <b id="mLat">—</b>&ensp;LNG <b id="mLng">—</b></div>
+                    <div class="mpill">State <b id="mState">IDLE</b></div>
+                    <button class="btn btg" style="font-size:11px;padding:5px 9px" onclick="centreRover()">⊕ Centre</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- STREAM -->
+        <div class="view" id="streamView" style="height:calc(100vh - 80px)">
+            <div class="strlayout" style="height:100%">
+                <div class="strscreen">
+                    <div class="stroff" id="strOff"><svg viewBox="0 0 24 24"><path d="M18 10.48V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4.48l4 3.98v-11l-4 3.5zm-2-.79V18H4V6h12v3.69z"/></svg><p>Camera stream offline</p><p style="font-size:11px;margin-top:5px;font-family:var(--font-mono);color:var(--muted)">192.168.4.1:81/stream</p></div>
+                    <img id="strImg" style="width:100%;height:100%;object-fit:contain;display:none">
+                </div>
+                <div style="display:flex;flex-direction:column;gap:9px">
+                    <div class="panel">
+                        <div class="ph"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>Detection</div>
+                        <div style="display:flex;flex-direction:column;gap:7px">
+                            <div class="drow"><div class="ddot" id="fireDot"></div><span>Fire</span><span class="dconf" id="fireConf">—</span></div>
+                            <div class="drow"><div class="ddot" id="motDot"></div><span>Motion</span><span class="dconf" id="motConf">—</span></div>
+                            <div class="drow"><div class="ddot" id="humDot"></div><span>Human</span><span class="dconf" id="humConf">—</span></div>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <div class="ph"><svg viewBox="0 0 24 24"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>Cam Controls</div>
+                        <div style="display:flex;flex-direction:column;gap:6px">
+                            <button class="btn bta" style="width:100%;justify-content:center" onclick="sendCmd('STREAM_ON')">▶ Start Stream</button>
+                            <button class="btn btg" style="width:100%;justify-content:center" onclick="sendCmd('STREAM_OFF')">■ Stop</button>
+                            <button class="btn btg" style="width:100%;justify-content:center" onclick="sendCmd('CAPTURE')">📷 Capture</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- FENCING -->
+        <div class="view" id="fencingView" style="height:calc(100vh - 80px)">
+            <div class="flay" style="height:100%">
+                <div class="fbar">
+                    <button class="btn bta" id="fBtn" onclick="toggleFence()">Draw Area</button>
+                    <button class="btn btd" onclick="clearFence()">Clear</button>
+                    <button class="btn btg" onclick="saveFence()">Save Fence</button>
+                    <span class="finfo" id="fInfo">No area drawn</span>
+                </div>
+                <div class="fmapwrap"><div id="fencingMap" style="width:100%;height:100%"></div></div>
+            </div>
+        </div>
+
+        <!-- CHAT -->
+        <div class="view" id="chatView" style="height:calc(100vh - 80px)">
+            <div class="chatlay" style="height:100%">
+                <div class="chsb">
+                    <div class="chhd">Channels</div>
+                    <div class="chlist" id="chList"></div>
+                </div>
+                <div class="chatmain">
+                    <div class="chatmsgs" id="chatMsgs"></div>
+                    <div class="chatinrow">
+                        <input id="chatInput" type="text" placeholder="Message #general…"
+                               onkeydown="if(event.key==='Enter')sendChat()" maxlength="400">
+                        <button class="btn bta" onclick="sendChat()">Send</button>
+                    </div>
+                </div>
+                <div class="usrsb">
+                    <div class="usrhd">Online — <span id="onlineCount">0</span></div>
+                    <div class="usrlist" id="usrList"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ALERTS -->
+        <div class="view" id="alertsView">
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:12px">
+                <span style="font-size:13px;color:var(--dim)"><b id="alertCount">0</b> alerts</span>
+                <button class="btn btg" style="margin-left:auto" onclick="clearAlerts()">Clear All</button>
+            </div>
+            <div class="alist" id="alertList"><div class="nodata">No alerts — all systems normal</div></div>
+        </div>
+
+        <!-- SETTINGS -->
+        <div class="view" id="settingsView">
+            <div class="sgrid">
+                <div class="panel">
+                    <div class="ph"><svg viewBox="0 0 24 24"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>Connection</div>
+                    <div class="srow"><div><div class="stxt">Server URL</div><div class="slbl">Pi Zero Flask (auto-detected)</div></div><input class="sinput" id="setApi" placeholder="Auto"></div>
+                    <div class="srow"><div><div class="stxt">Camera Stream</div><div class="slbl">MJPEG from C3 AP</div></div><input class="sinput" id="setStream" value="http://192.168.4.1:81/stream"></div>
+                    <div style="margin-top:12px;display:flex;gap:7px">
+                        <button class="btn bta" onclick="saveSettings()">Save</button>
+                        <button class="btn btg" onclick="doReconnect()">Reconnect</button>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="ph"><svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>Patrol</div>
+                    <div class="srow"><div><div class="stxt">Geofence Radius</div><div class="slbl">metres (rover_main GEOFENCE_RADIUS_M)</div></div><input class="sinput" id="setRadius" type="number" value="50" min="10" max="5000"></div>
+                    <div class="srow"><div><div class="stxt">SMS Phone</div><div class="slbl">SIM800L alert recipient</div></div><input class="sinput" id="setSms" value="+1234567890"></div>
+                </div>
+                <div class="panel">
+                    <div class="ph"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>Hardware</div>
+                    <div class="srow"><span class="slbl">Main MCU</span><span class="chip">ESP32-S3</span></div>
+                    <div class="srow"><span class="slbl">Camera</span><span class="chip">ESP32-CAM AI-Thinker</span></div>
+                    <div class="srow"><span class="slbl">Bridge</span><span class="chip">ESP32-C3 (Stasis-Base AP)</span></div>
+                    <div class="srow"><span class="slbl">Base Station</span><span class="chip">RPi Zero + Python Flask</span></div>
+                    <div class="srow"><span class="slbl">Motors</span><span class="chip">L9110S 4WD</span></div>
+                    <div class="srow"><span class="slbl">GPS</span><span class="chip">NEO-6M</span></div>
+                </div>
+                <div class="panel">
+                    <div class="ph"><svg viewBox="0 0 24 24"><path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>Shortcuts</div>
+                    <div class="srow"><span class="slbl">Emergency Stop</span><kbd>Space</kbd></div>
+                    <div class="srow"><span class="slbl">Start Patrol</span><kbd>P</kbd></div>
+                    <div class="srow"><span class="slbl">Return Home</span><kbd>H</kbd></div>
+                    <div class="srow"><span class="slbl">Fence Mode</span><kbd>F</kbd></div>
+                    <div class="srow"><span class="slbl">Views</span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd><kbd>5</kbd><kbd>6</kbd></div>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /content -->
+</div><!-- /main -->
+
+<div id="toasts"></div>
+
+<!-- LOGIN -->
+<div class="mbg" id="loginModal">
+    <div class="mbox">
+        <div class="mlogo">ST</div>
+        <h2>STASIS</h2>
+        <p>Rover Command Center<br>Connect to <b>Stasis-Base</b> WiFi first</p>
+        <input class="minput" type="text" id="loginName" placeholder="Operator name (or leave blank for Guest)"
+               maxlength="24" onkeydown="if(event.key==='Enter')doLogin(false)">
+        <button class="btn bta" style="width:100%;justify-content:center;margin-bottom:8px" onclick="doLogin(false)">Enter</button>
+        <button class="btn btg" style="width:100%;justify-content:center" onclick="doLogin(true)">Continue as Guest</button>
     </div>
-    
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script>
-        // State
-        let map, miniMap, fenceMap, fenceRect, fenceMode = false, fenceStart = null;
-        let userName = 'Guest';
-        let rover = { lat: 11.0168, lng: 76.9558, battery: 75, temp: 25, status: 'IDLE', distance: 100 };
-        
-        // Page Navigation
-        function showPage(name, el) {
-            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-            document.getElementById('page-' + name).classList.add('active');
-            if(el) el.classList.add('active');
-            document.getElementById('pageTitle').textContent = name.charAt(0).toUpperCase() + name.slice(1);
-            
-            setTimeout(() => {
-                if(name === 'map' && map) map.invalidateSize();
-                if(name === 'fencing' && fenceMap) fenceMap.invalidateSize();
-            }, 100);
-        }
-        
-        // Maps
-        function initMaps() {
-            const center = [rover.lat, rover.lng];
-            const roverIcon = L.divIcon({className:'',html:'<div style="background:#58a6ff;width:24px;height:24px;border-radius:50%;border:3px solid #fff;display:flex;align-items:center;justify-content:center;"><i class="fas fa-robot" style="color:#fff;font-size:10px;"></i></div>',iconSize:[24,24],iconAnchor:[12,12]});
-            const homeIcon = L.divIcon({className:'',html:'<div style="background:#3fb950;width:20px;height:20px;border-radius:4px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;"><i class="fas fa-home" style="color:#fff;font-size:10px;"></i></div>',iconSize:[20,20],iconAnchor:[10,10]});
-            
-            miniMap = L.map('miniMap',{zoomControl:false,dragging:false}).setView(center,15);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:''}).addTo(miniMap);
-            L.marker(center,{icon:homeIcon}).addTo(miniMap);
-            miniMap.markers = [L.marker(center,{icon:roverIcon}).addTo(miniMap)];
-            
-            map = L.map('map').setView(center,15);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:''}).addTo(map);
-            map.markers = [L.marker(center,{icon:homeIcon,title:'Base'}).addTo(map),L.marker(center,{icon:roverIcon,title:'Rover'}).addTo(map)];
-            
-            fenceMap = L.map('fencingMap').setView(center,15);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:''}).addTo(fenceMap);
-            L.marker(center,{icon:homeIcon,title:'Base'}).addTo(fenceMap);
-            
-            fenceMap.on('mousedown',function(e){
-                if(!fenceMode) return;
-                if(fenceRect)fenceMap.removeLayer(fenceRect);
-                fenceStart=e.latlng;
-                fenceRect=L.rectangle(L.latLngBounds(e.latlng,e.latlng),{color:'#58a6ff',fillOpacity:0.2}).addTo(fenceMap);
-            });
-            fenceMap.on('mousemove',function(e){
-                if(!fenceMode||!fenceStart||!fenceRect)return;
-                fenceRect.setBounds(L.latLngBounds(fenceStart,e.latlng));
-            });
-            fenceMap.on('mouseup',function(e){
-                if(!fenceMode||!fenceStart)return;
-                fenceStart=null;
-            });
-        }
-        
-        // Fence Controls
-        function toggleFence() {
-            fenceMode=!fenceMode;
-            fenceMap.getContainer().style.cursor=fenceMode?'crosshair':'';
-            alert(fenceMode?'Draw mode: Click and drag on map':'Draw mode off');
-        }
-        function clearFence() {
-            if(fenceRect){fenceMap.removeLayer(fenceRect);fenceRect=null;}
-        }
-        function saveFence() {
-            if(!fenceRect){alert('Draw an area first!');return;}
-            alert('Fence saved!');
-            fenceMode=false;
-            fenceMap.getContainer().style.cursor='';
-        }
-        
-        // Rover Commands
-        function sendCmd(cmd) {
-            let cmdMap = {'STOP':'STOP','PATROL':'START_PATROL','HOME':'RETURN_HOME'};
-            let apiCmd = cmdMap[cmd] || cmd;
-            
-            // Update local state
-            if(cmd==='STOP')rover.status='IDLE';
-            else if(cmd==='PATROL')rover.status='PATROL';
-            else if(cmd==='HOME')rover.status='RETURNING';
-            updateDisplay();
-            
-            // Send to backend
-            fetch('/api/command',{
-                method:'POST',
-                headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({cmd:apiCmd})
-            }).then(r=>r.json()).then(d=>{
-                if(d.error)alert('Error: '+d.error);
-                else alert('Command sent: '+cmd);
-            }).catch(e=>{
-                alert('Command (simulated): '+cmd);
-            });
-        }
-        
-        // Chat
-        function sendChat() {
-            const input=document.getElementById('chatInput');
-            const text=input.value.trim();
-            if(!text)return;
-            const msgs=document.getElementById('chatMessages');
-            const div=document.createElement('div');
-            div.className='msg';
-            div.innerHTML='<div class="msg-header"><span class="msg-user">'+userName+'</span><span class="msg-time">'+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+'</span></div><div class="msg-text">'+text+'</div>';
-            msgs.appendChild(div);
-            msgs.scrollTop=msgs.scrollHeight;
-            input.value='';
-        }
-        
-        // Update Display
-        function updateDisplay() {
-            document.getElementById('roverState').textContent=rover.status;
-            document.getElementById('roverBattery').textContent=rover.battery.toFixed(0)+'%';
-            document.getElementById('roverTemp').textContent=rover.temp.toFixed(1)+'°C';
-            document.getElementById('roverDistance').textContent=rover.distance.toFixed(0)+'cm';
-            
-            if(miniMap&&miniMap.markers){
-                miniMap.markers[0].setLatLng([rover.lat,rover.lng]);
+</div>
+
+<!--
+    ════════════════════════════════════════════════════════
+    SCRIPT LOAD ORDER — CRITICAL
+
+    1. /socket.io/socket.io.js  (Flask-SocketIO serves this
+       from its own built-in route — works offline on Pi)
+
+    2. Leaflet loaded DYNAMICALLY inside loadLeaflet() below.
+       All L.* calls are inside that callback. Never before.
+    ════════════════════════════════════════════════════════
+-->
+<script src="/socket.io/socket.io.js" onerror="window._noSocketIO=true;console.warn('socket.io not available')"></script>
+<script>
+'use strict';
+
+/* ═══════════════════════════════════════════════════════════════
+   LEAFLET DYNAMIC LOADER
+   Tries CDN (3 s timeout), then /static/leaflet.js, then offline.
+   ALL map code runs inside the callback — L is always defined.
+   ═══════════════════════════════════════════════════════════════ */
+function loadLeaflet(cb) {
+    if (window.L) { cb(); return; }
+
+    function showMapOffline() {
+        window._mapOffline = true;
+        ['miniMap','mainMap','fencingMap'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.outerHTML = `<div class="map-offline">🗺 Map offline<br><small style="font-family:var(--font-mono);font-size:10px">Download leaflet.js to /static/ for offline maps</small></div>`;
+        });
+        cb(); // still call cb so app continues without maps
+    }
+
+    function tryLocal() {
+        const s = document.createElement('script');
+        s.src = '/static/leaflet.js';
+        s.onload = cb;
+        s.onerror = showMapOffline;
+        document.head.appendChild(s);
+    }
+
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    let done = false;
+    const guard = (fn) => () => { if (done) return; done = true; fn(); };
+    const timer = setTimeout(guard(tryLocal), 3000);
+    s.onload  = guard(() => { clearTimeout(timer); cb(); });
+    s.onerror = guard(() => { clearTimeout(timer); tryLocal(); });
+    document.head.appendChild(s);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════════════════════════════ */
+const S = {
+    user: null, socket: null, simInt: null, simMode: false, packets: 0,
+    alerts: [], logLines: [],
+    chatMsgs: { general:[], alerts:[], patrol:[] },
+    activeCh: 'general', onlineUsers: {}, unread: { general:0, alerts:0, patrol:0 },
+    fenceMode:false, fDraw:false, fStart:null, fRect:null,
+    miniMap:null, mainMap:null, fenceMap:null,
+    roverMini:null, roverMain:null, pathLine:null, pathPts:[],
+    rover: { lat:11.0168, lng:76.9558, battery:0, temp:25, speed:0, heading:0, distance:999, status:'IDLE', hazard:false, fire:false, motion:false, human:false }
+};
+
+const PALETTE = ['#00e5a0','#00cfff','#ffb347','#a78bfa','#fb923c','#34d399','#f472b6'];
+const uCol = n => { let h=0; for(let i=0;i<n.length;i++)h=(h*31+n.charCodeAt(i))&0x7fffffff; return PALETTE[h%PALETTE.length]; };
+
+/* ═══════════════════════════════════════════════════════════════
+   BOOT
+   ═══════════════════════════════════════════════════════════════ */
+window.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('initTime').textContent = tnow();
+    try {
+        const u = JSON.parse(localStorage.getItem('stasis_user')||'null');
+        if (u && u.name) { S.user = u; boot(); return; }
+    } catch(e) {}
+    document.getElementById('loginModal').classList.remove('hidden');
+});
+
+function doLogin(guest) {
+    const raw = document.getElementById('loginName').value.trim();
+    const name = (!guest && raw) ? raw : 'Guest';
+    S.user = { name, role: guest?'Guest':'Operator', color: uCol(name) };
+    localStorage.setItem('stasis_user', JSON.stringify(S.user));
+    document.getElementById('loginModal').classList.add('hidden');
+    boot();
+}
+
+function doLogout() {
+    if (S.socket) S.socket.disconnect();
+    stopSim(); S.user = null;
+    localStorage.removeItem('stasis_user');
+    document.getElementById('loginModal').classList.remove('hidden');
+}
+
+function boot() {
+    const n = S.user.name;
+    setEl('uname', n);
+    const av = document.getElementById('uav');
+    if (av) { av.textContent = n[0].toUpperCase(); av.style.background = S.user.color||'#00e5a0'; }
+    loadSettings();
+    initChat();
+    connectSocket();
+    loadLeaflet(initMaps);
+    addLog('STASIS ready. Connecting to ' + window.location.origin, 'ok');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   NAVIGATION
+   ═══════════════════════════════════════════════════════════════ */
+const TITLES = { dashboard:'Dashboard', map:'Live Map', stream:'Camera Stream', fencing:'Geofencing', chat:'Team Chat', alerts:'Alerts', settings:'Settings' };
+
+function nav(v, el) {
+    document.querySelectorAll('.sb-btn').forEach(b => b.classList.remove('active'));
+    const btn = el || document.querySelector(`.sb-btn[onclick*="'${v}'"]`);
+    if (btn) btn.classList.add('active');
+    document.querySelectorAll('.view').forEach(x => x.classList.toggle('active', x.id===v+'View'));
+    setEl('ptitle', TITLES[v]||v);
+    setTimeout(() => {
+        if (v==='dashboard' && S.miniMap) S.miniMap.invalidateSize();
+        if (v==='map'       && S.mainMap) S.mainMap.invalidateSize();
+        if (v==='fencing'   && S.fenceMap) S.fenceMap.invalidateSize();
+    }, 160);
+    if (v==='chat') { S.unread[S.activeCh]=0; renderChannels(); }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SOCKET.IO
+   Uses Flask-SocketIO protocol (NOT raw WebSocket).
+   io() auto-connects to window.location.origin (Pi's Flask server).
+   ═══════════════════════════════════════════════════════════════ */
+function connectSocket() {
+    if (window._noSocketIO) { addLog('socket.io.js not loaded — check Flask is running', 'err'); startSim(); return; }
+    try {
+        S.socket = io({ reconnectionDelay:2000, reconnectionAttempts:15 });
+
+        S.socket.on('connect', () => {
+            setOnline(true); stopSim();
+            S.socket.emit('auth', { user: S.user });
+            addLog('Connected to base station via Socket.IO', 'ok');
+        });
+
+        S.socket.on('disconnect', () => {
+            setOnline(false);
+            addLog('Disconnected from base station', 'err');
+            startSim();
+        });
+
+        S.socket.on('connect_error', () => {
+            if (!S.simMode) startSim();
+        });
+
+        S.socket.on('connected', () => setOnline(true));
+
+        S.socket.on('telemetry', d => {
+            stopSim(); setOnline(true); S.packets++;
+            applyTelemetry(d);
+        });
+
+        S.socket.on('alert', d => {
+            addAlert(d.alertType||'warning', d.title||'Alert', d.message||'');
+        });
+
+        // Chat: server broadcasts to ALL connected clients
+        S.socket.on('chat', d => {
+            const ch  = d.channel||'general';
+            const msg = d.message||d;
+            if (!S.chatMsgs[ch]) S.chatMsgs[ch] = [];
+            // Deduplicate our own echo: skip if same content+user within 500ms
+            const last = S.chatMsgs[ch][S.chatMsgs[ch].length-1];
+            if (last && last.user===msg.user && last.content===msg.content && (Date.now()-new Date(last.timestamp||0).getTime())<500) return;
+            S.chatMsgs[ch].push(msg);
+            if (S.chatMsgs[ch].length>300) S.chatMsgs[ch].shift();
+            const chatOpen = document.getElementById('chatView').classList.contains('active');
+            if (!chatOpen || S.activeCh!==ch) S.unread[ch]=(S.unread[ch]||0)+1;
+            renderChannels();
+            if (S.activeCh===ch) renderMsgs();
+        });
+
+        S.socket.on('user_joined', d => {
+            const who = d.user||d;
+            if (who && who!==S.user.name) {
+                S.onlineUsers[who] = uCol(who);
+                renderUsers();
+                sysMsg(`${who} joined the channel`);
             }
-            if(map&&map.markers){
-                map.markers[1].setLatLng([rover.lat,rover.lng]);
-            }
-        }
-        
-        // Simulation
-        function simulate() {
-            setInterval(()=>{
-                rover.temp=22+Math.random()*10;
-                rover.battery=Math.max(0,rover.battery-0.005);
-                if(rover.status==='PATROL'){
-                    rover.lat+=(Math.random()-0.5)*0.0008;
-                    rover.lng+=(Math.random()-0.5)*0.0008;
-                }
-                rover.distance=30+Math.random()*150;
-                updateDisplay();
-                document.getElementById('statusDot').classList.add('on');
-                document.getElementById('statusText').textContent='Simulated';
-            },2000);
-        }
-        
-        // Init
-        function initApp() {
-            const saved = localStorage.getItem('stasis_user');
-            if(saved){
-                try{
-                    const u = JSON.parse(saved);
-                    if(u && u.name){
-                        userName = u.name;
-                        return;
-                    }
-                }catch(e){}
-            }
-            document.getElementById('loginModal').classList.remove('hidden');
-        }
-        
-        function doLogin(){
-            const name = document.getElementById('loginName').value.trim() || 'Guest';
-            userName = name;
-            localStorage.setItem('stasis_user',JSON.stringify({name:name}));
-            document.getElementById('loginModal').classList.add('hidden');
-        }
-        
-        function logout(){
-            localStorage.removeItem('stasis_user');
-            userName = 'Guest';
-            document.getElementById('loginModal').classList.remove('hidden');
-        }
-        
-        initMaps();
-        initApp();
-        simulate();
-    </script>
+        });
+
+        S.socket.on('user_left', d => {
+            const who = d.user||d;
+            if (who) { delete S.onlineUsers[who]; renderUsers(); sysMsg(`${who} left`); }
+        });
+
+        S.socket.on('detection', d => setDetection(d.fire, d.motion, d.human));
+
+    } catch(e) {
+        addLog('Socket.IO error: '+e.message, 'err');
+        startSim();
+    }
+}
+
+function doReconnect() { if(S.socket) S.socket.disconnect(); stopSim(); connectSocket(); toast('Reconnecting','Attempting reconnect...','info'); }
+
+/* ═══════════════════════════════════════════════════════════════
+   COMMANDS
+   ═══════════════════════════════════════════════════════════════ */
+const CMDMAP = { STOP:'STOP', PATROL:'START_PATROL', HOME:'RETURN_BASE', DOCKING:'ENABLE_DOCKING', RESET:'RESET', ALERT:'ALERT', STREAM_ON:'STREAM_ON', STREAM_OFF:'STREAM_OFF', CAPTURE:'CAPTURE' };
+
+function sendCmd(key) {
+    const cmd = CMDMAP[key]||key;
+    if (S.socket && S.socket.connected) S.socket.emit('command', { cmd, user:S.user });
+    const base = document.getElementById('setApi')?.value || window.location.origin+'/api';
+    fetch(base+'/command', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cmd}) }).catch(()=>{});
+    const st = { STOP:'IDLE', PATROL:'PATROL', HOME:'RETURNING', DOCKING:'DOCKING' };
+    if (st[key]) { S.rover.status=st[key]; updateDash(); }
+    const M = { STOP:['Emergency Stop','Rover halted','warning'], PATROL:['Patrol Started','Rover is patrolling','success'], HOME:['Return to Base','Rover returning home','info'], DOCKING:['Docking','Dock sequence engaged','info'], RESET:['Reset','State machine reset','info'] };
+    if (M[key]) { toast(...M[key]); addLog('CMD: '+cmd+' by '+(S.user?.name||'?'), key==='STOP'?'warn':'ok'); }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TELEMETRY
+   ═══════════════════════════════════════════════════════════════ */
+function applyTelemetry(d) {
+    const r = S.rover;
+    if (d.bat      !=null) r.battery  = d.bat;
+    if (d.temp     !=null) r.temp     = d.temp;
+    if (d.speed    !=null) r.speed    = d.speed;
+    if (d.heading  !=null) r.heading  = d.heading;
+    if (d.distance !=null) r.distance = d.distance;
+    if (d.status   !=null) r.status   = d.status;
+    if (d.hazard   !=null) r.hazard   = d.hazard;
+    if (d.lat && d.lng) updatePos(d.lat, d.lng);
+    if (d.fire!=null) setDetection(d.fire, d.motion, d.human);
+    if (r.hazard) addAlert('hazard','Hazard Detected','Rover state: '+r.status);
+    updateDash();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MAPS — only called after loadLeaflet() confirms L is defined
+   ═══════════════════════════════════════════════════════════════ */
+const HOME = [11.0168, 76.9558];
+
+function roverIcon(sm) {
+    const s=sm?22:28, h=s/2;
+    return L.divIcon({ className:'', iconSize:[s,s], iconAnchor:[h,h],
+        html:`<div style="width:${s}px;height:${s}px;background:#00e5a0;border-radius:50%;border:2px solid #fff;display:flex;align-items:center;justify-content:center;box-shadow:0 0 7px rgba(0,229,160,.5)"><svg viewBox="0 0 24 24" style="width:${h}px;height:${h}px;fill:#000"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg></div>`
+    });
+}
+function homeIcon() {
+    return L.divIcon({ className:'', iconSize:[20,20], iconAnchor:[10,10],
+        html:'<div style="width:20px;height:20px;background:#3fb950;border-radius:4px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;box-shadow:0 0 6px rgba(63,185,80,.5)"><svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:#fff"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg></div>'
+    });
+}
+
+const OSM = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+function initMaps() {
+    if (window._mapOffline) return;
+
+    // Mini map
+    if (!S.miniMap) {
+        const el = document.getElementById('miniMap');
+        if (el && el.style===undefined) return; // replaced by offline div
+        try {
+            S.miniMap = L.map('miniMap', { zoomControl:false, dragging:false, scrollWheelZoom:false }).setView(HOME,15);
+            L.tileLayer(OSM,{attribution:''}).addTo(S.miniMap);
+            L.marker(HOME,{icon:homeIcon()}).addTo(S.miniMap);
+            S.roverMini = L.marker(HOME,{icon:roverIcon(true)}).addTo(S.miniMap);
+        } catch(e) { console.warn('miniMap init failed',e); }
+    }
+
+    // Main map
+    if (!S.mainMap) {
+        try {
+            S.mainMap = L.map('mainMap').setView(HOME,15);
+            L.tileLayer(OSM,{attribution:''}).addTo(S.mainMap);
+            L.marker(HOME,{icon:homeIcon(),title:'Base Station'}).addTo(S.mainMap);
+            S.roverMain = L.marker(HOME,{icon:roverIcon(false),title:'STASIS Rover'}).addTo(S.mainMap);
+            S.pathLine  = L.polyline([],{color:'#00e5a0',weight:2,opacity:.5}).addTo(S.mainMap);
+        } catch(e) { console.warn('mainMap init failed',e); }
+    }
+
+    // Fencing map
+    if (!S.fenceMap) {
+        try {
+            S.fenceMap = L.map('fencingMap').setView(HOME,15);
+            L.tileLayer(OSM,{attribution:''}).addTo(S.fenceMap);
+            L.marker(HOME,{icon:homeIcon(),title:'Base'}).addTo(S.fenceMap);
+
+            S.fenceMap.on('mousedown', e => {
+                if (!S.fenceMode) return;
+                S.fDraw=true; S.fStart=e.latlng;
+                if (S.fRect) { S.fenceMap.removeLayer(S.fRect); S.fRect=null; }
+                S.fenceMap.dragging.disable();
+            });
+            S.fenceMap.on('mousemove', e => {
+                if (!S.fenceMode||!S.fDraw||!S.fStart) return;
+                const b=L.latLngBounds(S.fStart,e.latlng);
+                if (S.fRect) S.fenceMap.removeLayer(S.fRect);
+                S.fRect=L.rectangle(b,{color:'#00e5a0',weight:2,fillOpacity:.12}).addTo(S.fenceMap);
+                const dlat=Math.abs(b.getNorthEast().lat-b.getSouthWest().lat)*111320;
+                const dlng=Math.abs(b.getNorthEast().lng-b.getSouthWest().lng)*111320*Math.cos(b.getCenter().lat*Math.PI/180);
+                const ha=(dlat*dlng/10000).toFixed(2);
+                setEl('fInfo','~'+ha+' ha');
+            });
+            S.fenceMap.on('mouseup', () => { if(!S.fDraw)return; S.fDraw=false; S.fenceMap.dragging.enable(); });
+        } catch(e) { console.warn('fenceMap init failed',e); }
+    }
+}
+
+function updatePos(lat, lng) {
+    S.rover.lat=lat; S.rover.lng=lng;
+    const ll=[lat,lng];
+    if (S.roverMini) S.roverMini.setLatLng(ll);
+    if (S.roverMain) S.roverMain.setLatLng(ll);
+    if (S.miniMap)   S.miniMap.panTo(ll,{animate:true});
+    S.pathPts.push(ll);
+    if (S.pathPts.length>500) S.pathPts.shift();
+    if (S.pathLine) S.pathLine.setLatLngs(S.pathPts);
+    const f=v=>(+v).toFixed(6);
+    [['dLat',f(lat)],['dLng',f(lng)],['mLat',f(lat)],['mLng',f(lng)]].forEach(([id,v])=>setEl(id,v));
+}
+
+function centreRover() { if (S.mainMap) S.mainMap.setView([S.rover.lat,S.rover.lng],S.mainMap.getZoom()); }
+
+/* ═══════════════════════════════════════════════════════════════
+   FENCING
+   ═══════════════════════════════════════════════════════════════ */
+function toggleFence() {
+    if (window._mapOffline) { toast('Maps Offline','Leaflet not loaded','error'); return; }
+    S.fenceMode = !S.fenceMode;
+    const b = document.getElementById('fBtn');
+    if (S.fenceMode) {
+        if (b) b.textContent='Exit Draw';
+        if (S.fenceMap) S.fenceMap.getContainer().style.cursor='crosshair';
+        toast('Draw Mode','Click and drag to draw fence area','info');
+    } else {
+        if (b) b.textContent='Draw Area';
+        if (S.fenceMap) { S.fenceMap.getContainer().style.cursor=''; S.fenceMap.dragging.enable(); }
+        S.fDraw=false; S.fStart=null;
+    }
+}
+function clearFence() {
+    if (S.fRect && S.fenceMap) { S.fenceMap.removeLayer(S.fRect); S.fRect=null; }
+    S.fStart=null; setEl('fInfo','No area drawn'); toast('Fence Cleared','','info');
+}
+function saveFence() {
+    if (!S.fRect) { toast('No Area','Draw a fence area first','error'); return; }
+    const b=S.fRect.getBounds();
+    const bounds=[[b.getSouthWest().lat,b.getSouthWest().lng],[b.getNorthEast().lat,b.getNorthEast().lng]];
+    if (S.socket && S.socket.connected) S.socket.emit('command',{cmd:'set_fence',params:{bounds}});
+    const base=document.getElementById('setApi')?.value||window.location.origin+'/api';
+    fetch(base+'/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'set_fence',bounds})}).catch(()=>{});
+    toast('Fence Saved','Patrol area saved','success'); addLog('Geofence updated','ok'); toggleFence();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CHAT
+   Broadcast via Socket.IO to ALL users on the network.
+   ═══════════════════════════════════════════════════════════════ */
+const CHANNELS = [{id:'general',lbl:'general'},{id:'alerts',lbl:'alerts'},{id:'patrol',lbl:'patrol'}];
+
+function initChat() {
+    S.onlineUsers[S.user.name] = S.user.color;
+    renderChannels(); renderMsgs(); renderUsers();
+    sysMsg('Welcome to STASIS Team Chat! All operators on Stasis-Base WiFi can see your messages.');
+}
+
+function renderChannels() {
+    const el = document.getElementById('chList'); if (!el) return;
+    el.innerHTML = CHANNELS.map(c => {
+        const u=S.unread[c.id]||0;
+        return `<div class="chitem ${c.id===S.activeCh?'active':''}" onclick="switchCh('${c.id}')"><span class="chhash">#</span>${c.lbl}${u?`<span class="chbadge">${u}</span>`:''}</div>`;
+    }).join('');
+}
+
+function switchCh(ch) {
+    S.activeCh=ch; S.unread[ch]=0;
+    const inp=document.getElementById('chatInput'); if(inp) inp.placeholder='Message #'+ch+'…';
+    renderChannels(); renderMsgs();
+}
+
+function renderMsgs() {
+    const el=document.getElementById('chatMsgs'); if(!el) return;
+    const msgs=S.chatMsgs[S.activeCh]||[];
+    if (!msgs.length) { el.innerHTML='<div class="nodata" style="padding:30px 10px">No messages in #'+S.activeCh+'</div>'; return; }
+    el.innerHTML = msgs.map(m => {
+        if (m._sys) return `<div class="msys">${esc(m.c)}</div>`;
+        const col = m.color||uCol(m.user||'?');
+        const me  = m.user===S.user?.name;
+        return `<div class="mgrp"><div class="mhdr"><span class="muser" style="color:${col}">${esc(m.user||'?')}${me?' <span style="color:var(--dim);font-size:10px;font-weight:400">(you)</span>':''}</span><span class="mtime">${fmtT(m.timestamp)}</span></div><div class="mbody">${esc(m.content||'')}</div></div>`;
+    }).join('');
+    el.scrollTop = el.scrollHeight;
+}
+
+function sysMsg(txt) {
+    if (!S.chatMsgs[S.activeCh]) S.chatMsgs[S.activeCh]=[];
+    S.chatMsgs[S.activeCh].push({_sys:true,c:txt});
+    renderMsgs();
+}
+
+function sendChat() {
+    const inp=document.getElementById('chatInput');
+    const txt=inp?.value?.trim(); if (!txt||!S.user) return;
+    const msg = { id:Date.now(), user:S.user.name, role:S.user.role, color:S.user.color, content:txt, timestamp:new Date().toISOString() };
+    // Server will echo back via 'chat' event; deduplicate handles it
+    if (S.socket && S.socket.connected) {
+        S.socket.emit('chat', { channel:S.activeCh, message:msg });
+    } else {
+        // Offline: show locally only
+        if (!S.chatMsgs[S.activeCh]) S.chatMsgs[S.activeCh]=[];
+        S.chatMsgs[S.activeCh].push(msg);
+        renderMsgs();
+        toast('Offline','Message saved locally only','warning');
+    }
+    inp.value='';
+}
+
+function renderUsers() {
+    const el=document.getElementById('usrList'), cnt=document.getElementById('onlineCount');
+    const u=Object.entries(S.onlineUsers);
+    if(cnt) cnt.textContent=u.length;
+    if(!el) return;
+    el.innerHTML=u.map(([n,c])=>`<div class="urow"><div class="udot" style="background:${c}"></div><span style="color:${c}">${esc(n)}</span></div>`).join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DASHBOARD
+   ═══════════════════════════════════════════════════════════════ */
+function updateDash() {
+    const r=S.rover;
+    const bat=+(r.battery||0).toFixed(1);
+    setV('dBat',bat+'%',bat<20?'err':bat<40?'warn':'ok');
+    const f=document.getElementById('batFill');
+    if(f){f.style.width=bat+'%';f.style.background=bat<20?'var(--danger)':bat<40?'var(--warn)':'var(--accent)';}
+    setV('dTemp',(r.temp||0).toFixed(1),(r.temp||0)>55?'err':(r.temp||0)>40?'warn':'');
+    setV('dSpd',((r.speed||0)*3.6).toFixed(1),'ok');
+    setV('dHdg',(r.heading||0).toFixed(0),'');
+    setV('dDst',(r.distance||0).toFixed(0),'');
+    setV('dPkt',S.packets,'');
+    const s=(r.status||'IDLE').toUpperCase();
+    const cls={IDLE:'sIDLE',SAFE_IDLE:'sIDLE',SAFE_HALT:'sIDLE',PATROL:'sPATROL',ALERT:'sALERT',RETURNING:'sRETURNING',RETURN_TO_BASE:'sRETURNING',DOCKING:'sDOCKING',DOCKED_CHARGING:'sCHARGING',CHARGING:'sCHARGING'};
+    const b=document.getElementById('sbadge');
+    if(b){b.className='sbadge '+(cls[s]||'sIDLE');b.textContent='● '+s;}
+    setEl('mState',s);
+}
+
+function setV(id,val,cls) { const e=document.getElementById(id); if(!e)return; e.textContent=val; if(cls!==undefined)e.className='sv '+cls; }
+function setEl(id,val) { const e=document.getElementById(id); if(e)e.textContent=val; }
+
+/* ═══════════════════════════════════════════════════════════════
+   DETECTION
+   ═══════════════════════════════════════════════════════════════ */
+function setDetection(fire,motion,human) {
+    S.rover.fire=!!fire; S.rover.motion=!!motion; S.rover.human=!!human;
+    dd('fireDot','fireConf',fire,'fire');
+    dd('motDot','motConf',motion,'motion');
+    dd('humDot','humConf',human,'human');
+}
+function dd(did,cid,active,cls) {
+    const d=document.getElementById(did),c=document.getElementById(cid);
+    if(d) d.className='ddot'+(active?' '+cls:'');
+    if(c) c.textContent=active?'DETECTED':'Clear';
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ALERTS
+   ═══════════════════════════════════════════════════════════════ */
+function addAlert(type,title,msg) {
+    if (S.alerts.length && S.alerts[0].title===title && Date.now()-S.alerts[0].ts<5000) return;
+    S.alerts.unshift({type,title,msg,ts:Date.now(),time:new Date().toLocaleTimeString()});
+    if(S.alerts.length>60) S.alerts.pop();
+    renderAlerts();
+    if(type==='hazard') toast(title,msg,'error');
+}
+function renderAlerts() {
+    const el=document.getElementById('alertList'),cnt=document.getElementById('alertCount');
+    if(cnt) cnt.textContent=S.alerts.length;
+    if(!el) return;
+    if(!S.alerts.length){el.innerHTML='<div class="nodata">No alerts — all systems normal</div>';return;}
+    const ico={hazard:'⚠',warning:'⚡',info:'ℹ'};
+    el.innerHTML=S.alerts.slice(0,30).map(a=>`<div class="acard ${a.type}"><span class="aico ${a.type}">${ico[a.type]||'●'}</span><div class="abody"><div class="at">${esc(a.title)}</div><div class="am">${esc(a.msg)}</div><div class="as">${a.time}</div></div></div>`).join('');
+}
+function clearAlerts(){S.alerts=[];renderAlerts();}
+
+/* ═══════════════════════════════════════════════════════════════
+   LOG
+   ═══════════════════════════════════════════════════════════════ */
+function addLog(msg,level) {
+    level=level||'ok';
+    S.logLines.unshift({msg,level,t:tnow()});
+    if(S.logLines.length>25) S.logLines.pop();
+    const el=document.getElementById('loglist'); if(!el) return;
+    el.innerHTML=S.logLines.map(l=>`<div class="lr ${l.level}"><span class="lt">${l.t}</span><span class="lm">${esc(l.msg)}</span></div>`).join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SIMULATION
+   ═══════════════════════════════════════════════════════════════ */
+function startSim() {
+    if(S.simInt) return;
+    S.simMode=true; setOnline(false);
+    document.getElementById('simTag').style.display='inline-flex';
+    S.rover.battery=72; S.rover.temp=26; S.rover.status='IDLE'; updateDash();
+    S.simInt=setInterval(()=>{
+        S.rover.temp=22+Math.random()*12;
+        S.rover.battery=Math.max(0,S.rover.battery-0.005);
+        S.packets++;
+        if(S.rover.status==='PATROL'){
+            S.rover.lat+=(Math.random()-.5)*0.0005;
+            S.rover.lng+=(Math.random()-.5)*0.0005;
+            S.rover.speed=0.3+Math.random()*.6;
+            S.rover.heading=(S.rover.heading+(Math.random()-.5)*25+360)%360;
+            updatePos(S.rover.lat,S.rover.lng);
+        } else { S.rover.speed=0; }
+        S.rover.distance=20+Math.random()*200;
+        updateDash();
+    },1500);
+}
+function stopSim() {
+    if(S.simInt){clearInterval(S.simInt);S.simInt=null;}
+    S.simMode=false;
+    document.getElementById('simTag').style.display='none';
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CONNECTION INDICATOR
+   ═══════════════════════════════════════════════════════════════ */
+function setOnline(on) {
+    const d=document.getElementById('cdot'),t=document.getElementById('ctext');
+    if(d) d.classList.toggle('on',on);
+    if(t) t.textContent=on?'Connected':(S.simMode?'Simulated':'Offline');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SETTINGS
+   ═══════════════════════════════════════════════════════════════ */
+function loadSettings() {
+    try {
+        const s=JSON.parse(localStorage.getItem('stasis_cfg')||'{}');
+        const a=document.getElementById('setApi');
+        if(!a.value) a.value=window.location.origin+'/api';
+        if(s.api) a.value=s.api;
+        if(s.radius) document.getElementById('setRadius').value=s.radius;
+        if(s.sms)    document.getElementById('setSms').value=s.sms;
+        if(s.stream) document.getElementById('setStream').value=s.stream;
+    } catch(e) {
+        const a=document.getElementById('setApi');
+        if(a&&!a.value) a.value=window.location.origin+'/api';
+    }
+}
+function saveSettings() {
+    localStorage.setItem('stasis_cfg',JSON.stringify({
+        api:    document.getElementById('setApi')?.value,
+        radius: document.getElementById('setRadius')?.value,
+        sms:    document.getElementById('setSms')?.value,
+        stream: document.getElementById('setStream')?.value
+    }));
+    toast('Settings Saved','Configuration updated','success');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   KEYBOARD SHORTCUTS
+   ═══════════════════════════════════════════════════════════════ */
+document.addEventListener('keydown', e => {
+    if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+    const m={
+        ' ': ()=>{e.preventDefault();sendCmd('STOP');},
+        'p': ()=>sendCmd('PATROL'),
+        'h': ()=>sendCmd('HOME'),
+        'f': ()=>{nav('fencing');setTimeout(toggleFence,200);},
+        'Escape': ()=>{if(S.fenceMode)toggleFence();},
+        '1':()=>nav('dashboard'),'2':()=>nav('map'),
+        '3':()=>nav('stream'),  '4':()=>nav('chat'),
+        '5':()=>nav('alerts'),  '6':()=>nav('settings')
+    };
+    if(m[e.key]) m[e.key]();
+});
+
+window.addEventListener('resize',()=>{
+    if(S.miniMap) S.miniMap.invalidateSize();
+    if(S.mainMap) S.mainMap.invalidateSize();
+    if(S.fenceMap) S.fenceMap.invalidateSize();
+});
+
+/* ═══════════════════════════════════════════════════════════════
+   TOAST
+   ═══════════════════════════════════════════════════════════════ */
+function toast(title,msg,type) {
+    const c=document.getElementById('toasts'); if(!c) return;
+    const t=document.createElement('div');
+    t.className='toast '+(type||'info');
+    t.innerHTML=`<b>${esc(title)}</b>${esc(msg)}`;
+    c.prepend(t);
+    setTimeout(()=>{t.style.transition='opacity .3s';t.style.opacity='0';setTimeout(()=>t.remove(),300);},3000);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   UTILITIES
+   ═══════════════════════════════════════════════════════════════ */
+function esc(s) { const d=document.createElement('div'); d.textContent=String(s==null?'':s); return d.innerHTML; }
+function tnow() { return new Date().toLocaleTimeString([],{hour12:false}); }
+function fmtT(ts) { try{return new Date(ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}catch(e){return tnow();} }
+</script>
 </body>
 </html>

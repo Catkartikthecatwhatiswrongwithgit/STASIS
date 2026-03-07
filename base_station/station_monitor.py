@@ -57,6 +57,16 @@ from flask import Flask, jsonify, request, send_from_directory, abort, Response,
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room
 
+# AprilTag docking — optional dependency
+# Install: pip install pupil-apriltags opencv-python-headless
+try:
+    import struct as _struct
+    import cv2 as _cv2
+    from pupil_apriltags import Detector as _ATDetector
+    APRILTAG_AVAILABLE = True
+except ImportError:
+    APRILTAG_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Try importing fpdf; if not installed, we will generate text reports instead.
 # ---------------------------------------------------------------------------
@@ -609,6 +619,117 @@ def send_command_to_bridge(command_string):
     except Exception as e:
         logger.error("Failed to send command: %s", e)
         return False
+
+
+
+
+# =============================================================================
+# APRILTAG DOCKING ASSIST
+# =============================================================================
+APRILTAG_ID      = 0
+APRILTAG_SIZE_M  = 0.10
+CAM_FX, CAM_FY   = 320.0, 320.0
+CAM_CX, CAM_CY   = 160.0, 120.0
+DOCK_CENTRE_TOL  = 15
+DOCK_CLOSE_DIST  = 0.25
+
+_dock_thread_running = False
+_at_detector_inst    = None
+
+
+def _build_dock_packet(turn, speed, docked):
+    turn  = max(-100, min(100, int(turn)))
+    speed = max(0,    min(100, int(speed)))
+    docked = 1 if docked else 0
+    chk = (turn & 0xFF) ^ (speed & 0xFF) ^ (docked & 0xFF)
+    import struct
+    return struct.pack("BBbBBB", 0xAA, turn & 0xFF, speed, docked & 0xFF, chk, 0x55)
+
+
+def send_dock_command(turn, speed, docked=0):
+    global serial_connection
+    if serial_connection is None or not serial_connection.is_open:
+        return
+    pkt = _build_dock_packet(turn, speed, docked)
+    try:
+        with serial_port_lock:
+            serial_connection.write(pkt)
+            serial_connection.flush()
+    except Exception as e:
+        logger.error("AprilTag: dock_cmd write error: %s", e)
+
+
+def apriltag_docking_thread():
+    global _dock_thread_running, _at_detector_inst
+    import time as _time
+    if not APRILTAG_AVAILABLE:
+        logger.warning("AprilTag docking disabled - install: pip install pupil-apriltags opencv-python-headless")
+        return
+
+    _at_detector_inst = _ATDetector(
+        families="tag36h11", nthreads=1, quad_decimate=2.0,
+        quad_sigma=0.0, refine_edges=1, decode_sharpening=0.25
+    )
+    cam_url = os.environ.get("CAM_STREAM_URL", "http://192.168.4.1:81/stream")
+    logger.info("AprilTag docking thread started (stream: %s)", cam_url)
+    _dock_thread_running = True
+
+    while _dock_thread_running:
+        if "DOCKING" not in str(latest_telemetry.get("status", "")).upper():
+            _time.sleep(0.5)
+            continue
+        logger.info("AprilTag: rover in DOCKING state")
+        cap = _cv2.VideoCapture(cam_url)
+        if not cap.isOpened():
+            logger.warning("AprilTag: cannot open stream, retrying in 2s")
+            _time.sleep(2.0)
+            continue
+        try:
+            while _dock_thread_running:
+                if "DOCKING" not in str(latest_telemetry.get("status", "")).upper():
+                    break
+                ret, frame = cap.read()
+                if not ret:
+                    _time.sleep(0.1)
+                    continue
+                gray  = _cv2.cvtColor(frame, _cv2.COLOR_BGR2GRAY)
+                tags  = _at_detector_inst.detect(gray, estimate_tag_pose=True,
+                            camera_params=(CAM_FX, CAM_FY, CAM_CX, CAM_CY),
+                            tag_size=APRILTAG_SIZE_M)
+                target = next((t for t in tags if t.tag_id == APRILTAG_ID), None)
+                if target is None:
+                    send_dock_command(turn=30, speed=15)
+                    try: socketio.emit("apriltag", {"found": False}, broadcast=True)
+                    except Exception: pass
+                    _time.sleep(0.1)
+                    continue
+                cx     = target.center[0]
+                err_x  = cx - CAM_CX
+                dist_m = float(target.pose_t[2][0])
+                logger.debug("AprilTag: err_x=%.1f dist=%.3fm", err_x, dist_m)
+                try:
+                    socketio.emit("apriltag", {"found": True, "tag_id": target.tag_id,
+                        "err_x": round(err_x,1), "dist_m": round(dist_m,3)}, broadcast=True)
+                except Exception: pass
+                if dist_m < DOCK_CLOSE_DIST:
+                    logger.info("AprilTag: DOCKED at %.3fm", dist_m)
+                    send_dock_command(turn=0, speed=0, docked=1)
+                    break
+                turn  = int(max(-100, min(100, err_x * 0.6)))
+                speed = int(max(10,   min(40,  (dist_m / 1.0) * 40)))
+                if abs(err_x) < DOCK_CENTRE_TOL:
+                    turn = 0
+                send_dock_command(turn=turn, speed=speed)
+                _time.sleep(0.05)
+        finally:
+            cap.release()
+            logger.info("AprilTag: camera released")
+    logger.info("AprilTag docking thread stopped")
+
+
+def stop_apriltag_thread():
+    global _dock_thread_running
+    _dock_thread_running = False
 
 
 def serial_listener_thread():
@@ -1166,6 +1287,18 @@ def main():
     )
     serial_thread.start()
     logger.info("Serial listener thread started.")
+
+    # Start AprilTag docking thread (no-op if library not installed)
+    apriltag_thread = threading.Thread(
+        target=apriltag_docking_thread,
+        name="AprilTagDocking",
+        daemon=True,
+    )
+    apriltag_thread.start()
+    if APRILTAG_AVAILABLE:
+        logger.info("AprilTag docking thread started.")
+    else:
+        logger.info("AprilTag docking thread started (DISABLED — library not installed).")
 
     # Start Flask with WebSocket support
     logger.info("Starting Flask API + WebSocket on %s:%d", FLASK_HOST, FLASK_PORT)

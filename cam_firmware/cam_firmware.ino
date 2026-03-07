@@ -262,11 +262,9 @@ void captureAndSend() {
   // Return frame buffer
   esp_camera_fb_return(fb);
   
-  // Send result as binary struct
-  Serial.write((uint8_t*)&result, sizeof(result));
-  Serial.println();  // End marker
-  
-  // Also send human-readable text
+  // FIX I1: Removed Serial.write() of raw binary DetectionResult struct.
+  // The binary header bytes corrupt rover_main's text-line parser (readStringUntil).
+  // Text-only output is sufficient and unambiguous for this demo.
   if (result.fire) {
     Serial.println("HAZARD:FIRE");
   } else if (result.motion) {
@@ -327,9 +325,16 @@ void detectOnly() {
   DetectionResult result = analyzeFrame(fb);
   esp_camera_fb_return(fb);
   
-  // Send binary result
-  Serial.write((uint8_t*)&result, sizeof(result));
-  Serial.println();
+  // FIX I1: Text-only output — no binary struct write
+  if (result.fire) {
+    Serial.println("HAZARD:FIRE");
+  } else if (result.motion) {
+    Serial.println("HAZARD:MOTION");
+  } else if (result.human) {
+    Serial.println("HAZARD:HUMAN");
+  } else {
+    Serial.println("CLEAR");
+  }
 }
 
 // ============================================================================
